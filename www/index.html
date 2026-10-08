@@ -9,10 +9,14 @@
   header{padding:10px;padding-top:max(10px,env(safe-area-inset-top));display:flex;flex-wrap:wrap;gap:8px;background:#1d1d1d;position:sticky;top:0;z-index:5}
   input[type=text]{flex:1 1 100%;padding:10px;border-radius:8px;border:0;font-size:15px;background:#333;color:#fff}
   select,button,label.btn{padding:10px 12px;border-radius:8px;border:0;background:#3b82f6;color:#fff;font-size:15px}
-  select{background:#333}
+  select{background:#333;flex:1;min-width:0}
+  button#dur{background:#dc2626}
+  button#degis{background:#444;flex:0 0 auto}
+  .diller{display:flex;gap:6px;width:100%;align-items:center}
   input[type=file]{display:none}
   #durum{width:100%;font-size:13px;color:#aaa}
-  canvas{width:100%;display:block;margin-bottom:2px}
+  #sayfalar canvas,#sayfalar img{width:100%;display:block;margin-bottom:2px}
+  [hidden]{display:none!important}
 </style>
 </head>
 <body>
@@ -20,14 +24,12 @@
   <input id="link" type="text" placeholder="Bölüm sayfası veya resim linki yapıştır (https://...)">
   <button id="git">🔗 Linkten yükle</button>
   <label class="btn">📂 Dosyadan<input id="dosya" type="file" accept="image/*" multiple></label>
-  <select id="dil">
-    <option value="eng">İngilizce</option>
-    <option value="jpn">Japonca</option>
-    <option value="kor">Korece</option>
-    <option value="chi_sim">Çince</option>
-    <option value="fra">Fransızca</option>
-    <option value="spa">İspanyolca</option>
-  </select>
+  <button id="dur" hidden>⏹ Durdur</button>
+  <div class="diller">
+    <select id="kaynak"></select>
+    <button id="degis" title="Dilleri değiştir">⇄</button>
+    <select id="hedef"></select>
+  </div>
   <div id="durum">Link yapıştır ya da dosya seç.</div>
 </header>
 <div id="sayfalar"></div>
@@ -35,17 +37,54 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-const kod = {eng:'en', jpn:'ja', kor:'ko', chi_sim:'zh-CN', fra:'fr', spa:'es'};
 
-// Uygulamada (Capacitor) CORS sorunu yok: istekler telefonun kendi ağ katmanından gider.
-// Tarayıcıda açılırsa eski usul proxy kullanılır.
+// [Tesseract kodu, çeviri kodu, görünen ad]
+const DILLER = [
+  ['eng','en','İngilizce'], ['tur','tr','Türkçe'], ['jpn','ja','Japonca'], ['kor','ko','Korece'],
+  ['chi_sim','zh-CN','Çince (Basit)'], ['chi_tra','zh-TW','Çince (Geleneksel)'],
+  ['fra','fr','Fransızca'], ['spa','es','İspanyolca'], ['deu','de','Almanca'], ['ita','it','İtalyanca'],
+  ['por','pt','Portekizce'], ['rus','ru','Rusça'], ['ind','id','Endonezce'], ['ara','ar','Arapça']
+];
+const bul = t => DILLER.find(d => d[0] === t) || [];
+const mKodu = t => bul(t)[1];
+const dilAdi = t => bul(t)[2] || t;
+
+// ---------- Ayarları saklama ----------
+const depo = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch {} };
+const onbellekOku = k => { try { return JSON.parse(depo('dilOnbellek') || '{}')[k]; } catch { return undefined; } };
+const onbellekYaz = (k, v) => { try { const o = JSON.parse(depo('dilOnbellek') || '{}'); o[k] = v; depo('dilOnbellek', JSON.stringify(o)); } catch {} };
+
+function baslat() {
+  $('kaynak').innerHTML = '<option value="auto">🔎 Otomatik algıla</option>' +
+    DILLER.map(d => `<option value="${d[0]}">${d[2]}</option>`).join('');
+  $('hedef').innerHTML = DILLER.map(d => `<option value="${d[1]}">${d[2]}</option>`).join('');
+  $('kaynak').value = depo('kaynak') || 'auto';
+  $('hedef').value = depo('hedef') || 'tr';
+  if (!$('kaynak').value) $('kaynak').value = 'auto';
+  if (!$('hedef').value) $('hedef').value = 'tr';
+}
+baslat();
+$('kaynak').onchange = () => depo('kaynak', $('kaynak').value);
+$('hedef').onchange = () => depo('hedef', $('hedef').value);
+$('degis').onclick = () => {
+  const k = $('kaynak').value;
+  if (k === 'auto') { $('durum').textContent = 'Dilleri değiştirmek için önce kaynak dili seç.'; return; }
+  const yeniKaynak = (DILLER.find(d => d[1] === $('hedef').value) || [])[0];
+  $('hedef').value = mKodu(k);
+  if (yeniKaynak) $('kaynak').value = yeniKaynak;
+  depo('kaynak', $('kaynak').value); depo('hedef', $('hedef').value);
+};
+
+// ---------- Ağ: uygulamada doğrudan, tarayıcıda proxy ile ----------
 const native = !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
 const Http = native ? Capacitor.Plugins.CapacitorHttp : null;
 const UA = 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36';
 const proxyResim = u => 'https://wsrv.nl/?url=' + encodeURIComponent(u);
 const proxySayfa = u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u);
 
-let calisiyor = false;
+let calisiyor = false, iptal = false;
+
+$('dur').onclick = () => { iptal = true; $('durum').textContent = 'Durduruluyor...'; };
 
 $('git').onclick = async () => {
   const link = $('link').value.trim();
@@ -54,15 +93,22 @@ $('git').onclick = async () => {
     $('durum').textContent = 'Sayfa getiriliyor...';
     const resimler = await resimLinkleriniBul(link);
     if (!resimler.length) throw new Error('Bu linkte resim bulunamadı.');
-    await hepsiniIsle(resimler.map(u => ({ kaynak: u, proxy: true, ref: link })));
+    await hepsiniIsle(resimler.map(u => ({ kaynak: u, proxy: true, ref: link })), seriAnahtari(link));
   } catch (e) { $('durum').textContent = 'Hata: ' + e.message; }
 };
 
 $('dosya').onchange = async e => {
   if (calisiyor) return;
   const liste = [...e.target.files].map(f => ({ kaynak: URL.createObjectURL(f), proxy: false }));
-  await hepsiniIsle(liste);
+  if (liste.length) await hepsiniIsle(liste, null);
 };
+
+function seriAnahtari(link) {
+  try {
+    const u = new URL(link);
+    return u.hostname + '/' + u.pathname.split('/').filter(Boolean).slice(0, 2).join('/');
+  } catch { return null; }
+}
 
 async function sayfaHtml(link) {
   if (native) {
@@ -87,14 +133,21 @@ async function resimKaynagi(oge) {
   return proxyResim(oge.kaynak);
 }
 
+async function resimYukle(oge, tut = false) {
+  if (oge.img) return oge.img;
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.src = await resimKaynagi(oge);
+  await img.decode();
+  if (tut) oge.img = img;
+  return img;
+}
+
 async function resimLinkleriniBul(link) {
   if (/\.(jpe?g|png|webp|gif)(\?|$)/i.test(link)) return [link];
-
-  const html = await sayfaHtml(link);
-  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const doc = new DOMParser().parseFromString(await sayfaHtml(link), 'text/html');
   const baz = (doc.querySelector('base') || {}).href || link;
   const gorulen = new Set(), sonuc = [];
-
   doc.querySelectorAll('img').forEach(img => {
     const ham = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') ||
                 img.getAttribute('data-original') || img.getAttribute('src');
@@ -109,77 +162,291 @@ async function resimLinkleriniBul(link) {
   return sonuc;
 }
 
-async function hepsiniIsle(liste) {
-  calisiyor = true;
-  $('sayfalar').innerHTML = '';
-  let worker;
+// ---------- Dil algılama ----------
+const HARF = {
+  ko: /[\uAC00-\uD7AF\u1100-\u11FF]/g,
+  ja: /[\u3040-\u30FF]/g,
+  zh: /[\u4E00-\u9FFF]/g,
+  ru: /[\u0400-\u04FF]/g,
+  ar: /[\u0600-\u06FF]/g,
+  la: /[A-Za-zÀ-ÿğşıİ]/g
+};
+const say = (s, r) => (s.match(r) || []).length;
+const KELIME = s => new Set(s.split(' '));
+const STOP = {
+  eng: KELIME("the and you that this what for are with not have but was your can just now it's i'm don't"),
+  fra: KELIME("le la les des est que pas vous une pour dans qui je nous ce sur"),
+  spa: KELIME("el los las que una por con para no es pero yo está como muy"),
+  deu: KELIME("der die das und ist nicht ich du ein mit zu den wir sie"),
+  ita: KELIME("il che di non sono per una con ma mi ti questo anche"),
+  por: KELIME("que não uma para com os em eu você mas está isso muito"),
+  tur: KELIME("ve bir bu ne ben sen için de da mi çok ama gibi ki değil"),
+  ind: KELIME("yang dan tidak ini itu aku kamu dengan untuk ada saya apa")
+};
+
+function dilTahmin(m) {
+  const k = say(m, HARF.ko), j = say(m, HARF.ja), z = say(m, HARF.zh),
+        r = say(m, HARF.ru), a = say(m, HARF.ar), l = say(m, HARF.la);
+  const top = k + j + z + r + a + l;
+  if (top < 25) return null;
+  if (k > top * .3) return 'kor';
+  if (j >= 6 && j > z * .2) return 'jpn';
+  if (z > top * .3) return /[們這個說來國時會學為麼]/.test(m) ? 'chi_tra' : 'chi_sim';
+  if (r > top * .3) return 'rus';
+  if (a > top * .3) return 'ara';
+  const kel = m.toLowerCase().match(/[a-zà-ÿğşıüöç']+/g) || [];
+  let en = 'eng', puan = 0;
+  for (const [dil, set] of Object.entries(STOP)) {
+    let p = 0;
+    for (const w of kel) if (set.has(w)) p++;
+    if (dil === 'tur') p += say(m, /[ğşıİ]/g);
+    if (p > puan) { puan = p; en = dil; }
+  }
+  return en;
+}
+
+function ornekKirp(img, baslangic) {
+  const k = img.naturalWidth < 900 ? 900 / img.naturalWidth : Math.min(1, 1200 / img.naturalWidth);
+  const W = Math.round(img.naturalWidth * k), H = Math.round(img.naturalHeight * k);
+  const y0 = Math.min(Math.round(H * baslangic), Math.max(0, H - 1600));
+  const h = Math.min(1600, H - y0);
+  const c = document.createElement('canvas');
+  c.width = W; c.height = h;
+  c.getContext('2d').drawImage(img, 0, y0 / k, img.naturalWidth, h / k, 0, 0, W, h);
+  return c;
+}
+
+async function dilAlgila(liste, anahtar) {
+  const kayit = anahtar && onbellekOku(anahtar);
+  if (kayit) return kayit;
+  await isciKapat(); // bellek için
+  $('durum').textContent = 'Dil algılanıyor (ilk seferde dil verileri iner, biraz sürebilir)...';
+  const w = await Tesseract.createWorker('eng+kor+jpn+chi_sim', 1);
+  let metin = '';
   try {
-    const dil = $('dil').value;
-    $('durum').textContent = 'OCR hazırlanıyor (ilk seferde dil verisi iner)...';
-    worker = await Tesseract.createWorker(dil, 1);
-    for (let i = 0; i < liste.length; i++) {
-      $('durum').textContent = `Sayfa ${i + 1}/${liste.length} işleniyor...`;
-      try { await sayfaIsle(liste[i], worker, dil); }
-      catch (e) { console.warn('Atlandı:', liste[i].kaynak, e); }
+    for (const oge of liste.slice(0, 5)) {
+      if (iptal) break;
+      let img;
+      try { img = await resimYukle(oge, true); } catch { continue; }
+      if (img.naturalWidth < 300 || img.naturalHeight < 300) continue;
+      for (const b of (img.naturalHeight > 2500 ? [0, 0.35] : [0])) {
+        const { data } = await w.recognize(ornekKirp(img, b));
+        metin += ' ' + data.text;
+        const t = dilTahmin(metin);
+        if (t) { if (anahtar) onbellekYaz(anahtar, t); return t; }
+      }
     }
-    $('durum').textContent = `Bitti ✅ (${liste.length} resim tarandı)`;
+  } finally { await w.terminate(); }
+  return null;
+}
+
+// ---------- OCR işçisi (tekrar kullanılır) ----------
+let isci = null, isciDil = null;
+async function ociGetir(dil) {
+  if (isci && isciDil === dil) return isci;
+  await isciKapat();
+  isci = await Tesseract.createWorker(dil, 1);
+  isciDil = dil;
+  return isci;
+}
+async function isciKapat() {
+  if (isci) { try { await isci.terminate(); } catch {} }
+  isci = null; isciDil = null;
+}
+
+// ---------- Ana akış ----------
+async function hepsiniIsle(liste, anahtar) {
+  calisiyor = true; iptal = false;
+  $('dur').hidden = false;
+  $('sayfalar').innerHTML = '';
+  try {
+    let k = $('kaynak').value;
+    if (k === 'auto') {
+      const t = await dilAlgila(liste, anahtar);
+      if (iptal) throw new Error('Durduruldu.');
+      k = t || 'eng';
+      $('durum').textContent = t ? `Algılanan dil: ${dilAdi(k)}` : 'Dil algılanamadı, İngilizce varsayıldı.';
+    }
+    const kM = mKodu(k), hM = $('hedef').value;
+    if (kM === hM) throw new Error('Kaynak ve hedef dil aynı. Dilleri kontrol et.');
+
+    await ociGetir(k);
+    let sonraki = resimYukle(liste[0]).catch(() => null);
+    for (let i = 0; i < liste.length && !iptal; i++) {
+      const img = await sonraki;
+      sonraki = i + 1 < liste.length ? resimYukle(liste[i + 1]).catch(() => null) : null;
+      if (!img || img.naturalWidth < 300 || img.naturalHeight < 300) { delete liste[i].img; continue; }
+      try {
+        const tuval = await sayfaIsle(img, k, kM, hM, `${dilAdi(k)} → ${dilAdi(DILLER.find(d => d[1] === hM)[0])} · sayfa ${i + 1}/${liste.length}`);
+        // Bellek tasarrufu: işlenen sayfayı hafif bir resme çevir
+        tuval.toBlob(b => {
+          if (!b) return;
+          const im = new Image();
+          im.src = URL.createObjectURL(b);
+          tuval.replaceWith(im);
+        }, 'image/jpeg', 0.88);
+      } catch (e) { console.warn('Sayfa atlandı:', e); }
+      delete liste[i].img;
+    }
+    $('durum').textContent = iptal ? 'Durduruldu ⏹' : `Bitti ✅ (${liste.length} resim tarandı)`;
   } catch (e) {
     $('durum').textContent = 'Hata: ' + e.message;
   } finally {
-    if (worker) await worker.terminate();
+    liste.forEach(o => delete o.img);
+    $('dur').hidden = true;
     calisiyor = false;
   }
 }
 
-async function sayfaIsle(oge, worker, dil) {
-  const img = new Image();
-  img.crossOrigin = 'anonymous';
-  img.src = await resimKaynagi(oge);
-  await img.decode();
-  if (img.naturalWidth < 300 || img.naturalHeight < 300) return;
+// Uzun webtoon şeritlerini, baloncukları ortadan kesmemek için sade (boş) satırlardan parçalara böler
+const MAX_GEN = 1400, PARCA = 1800;
+
+async function sayfaIsle(img, k, kM, hM, etiket) {
+  let oran = img.naturalWidth < 900 ? 900 / img.naturalWidth : Math.min(1, MAX_GEN / img.naturalWidth);
+  if (img.naturalHeight * oran > 16000) oran = 16000 / img.naturalHeight;
+  const W = Math.round(img.naturalWidth * oran), H = Math.round(img.naturalHeight * oran);
 
   const tuval = document.createElement('canvas');
-  tuval.width = img.naturalWidth;
-  tuval.height = img.naturalHeight;
-  const ctx = tuval.getContext('2d');
-  ctx.drawImage(img, 0, 0);
-  $('sayfalar').appendChild(tuval);
+  tuval.width = W; tuval.height = H;
+  const ctx = tuval.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, W, H);
+  $('sayfalar').appendChild(tuval); // orijinal hemen görünür, çeviri üstüne işlenir
 
-  const { data } = await worker.recognize(tuval);
-  const paragraflar = (data.paragraphs || data.blocks.flatMap(b => b.paragraphs))
-    .filter(p => p.confidence > 55 && p.text.trim().length > 1);
+  const worker = await ociGetir(k);
+  const nokta = kesimNoktalari(ctx, W, H);
+  for (let j = 0; j < nokta.length - 1 && !iptal; j++) {
+    $('durum').textContent = `${etiket} · parça ${j + 1}/${nokta.length - 1}`;
+    const y0 = nokta[j], h = nokta[j + 1] - y0;
+    const alt = document.createElement('canvas');
+    alt.width = W; alt.height = h;
+    alt.getContext('2d').drawImage(tuval, 0, y0, W, h, 0, 0, W, h);
 
-  const cevrilmis = await Promise.all(
-    paragraflar.map(p => ceviriGetir(p.text.replace(/\s+/g, ' ').trim(), dil))
-  );
-  paragraflar.forEach((p, i) => balonaYaz(ctx, p.bbox, cevrilmis[i]));
+    const { data } = await worker.recognize(alt);
+    const pr = (data.paragraphs || data.blocks.flatMap(b => b.paragraphs)).filter(gecerli);
+    if (!pr.length) continue;
+
+    const ceviriler = await havuz(pr, 4, p => cevir(temizle(p.text, k), kM, hM));
+    pr.forEach((p, i) => balonaYaz(ctx,
+      { x0: p.bbox.x0, y0: p.bbox.y0 + y0, x1: p.bbox.x1, y1: p.bbox.y1 + y0 },
+      ceviriler[i], hM));
+  }
+  return tuval;
 }
 
-async function ceviriGetir(metin, dil) {
-  const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(metin) +
-              '&langpair=' + kod[dil] + '|tr';
-  try {
-    const j = await (await fetch(url)).json();
-    return j.responseData.translatedText || metin;
-  } catch { return metin; }
+function kesimNoktalari(ctx, W, H) {
+  const n = [0];
+  let y = 0;
+  while (H - y > PARCA * 1.25) {
+    const hedef = y + PARCA;
+    y = enSadeSatir(ctx, W, hedef - 350, hedef + 350);
+    n.push(y);
+  }
+  n.push(H);
+  return n;
 }
 
-function balonaYaz(ctx, b, metin) {
-  const pad = 4;
-  const x = b.x0 - pad, y = b.y0 - pad, w = b.x1 - b.x0 + pad * 2, h = b.y1 - b.y0 + pad * 2;
-  ctx.fillStyle = '#fff';
+function enSadeSatir(ctx, W, a, b) {
+  const H = ctx.canvas.height;
+  a = Math.max(0, a); b = Math.min(H - 1, b);
+  const v = ctx.getImageData(0, a, W, b - a).data;
+  let en = Infinity, enY = (a + b) >> 1;
+  for (let y = 0; y < b - a; y += 2) {
+    let ort = 0, kare = 0, n = 0;
+    for (let x = 0; x < W; x += 6) {
+      const i = (y * W + x) * 4;
+      const p = (v[i] + v[i + 1] + v[i + 2]) / 3;
+      ort += p; kare += p * p; n++;
+    }
+    ort /= n;
+    const varyans = kare / n - ort * ort;
+    if (varyans < en) { en = varyans; enY = a + y; }
+  }
+  return enY;
+}
+
+// Gürültü, ses efektleri ve yanlış kutuları ele
+function gecerli(p) {
+  const t = p.text.trim();
+  if (t.length < 2 || p.confidence < 60) return false;
+  if (p.bbox.y1 - p.bbox.y0 < 14 || p.bbox.x1 - p.bbox.x0 < 20) return false;
+  const harf = (t.match(/[\p{L}\p{N}]/gu) || []).length;
+  return harf / t.length >= 0.5;
+}
+
+function temizle(t, k) {
+  t = t.replace(/\s+/g, ' ').trim();
+  if (k === 'jpn' || k === 'chi_sim' || k === 'chi_tra') {
+    // Tesseract Japonca/Çincede harflerin arasına boşluk koyar, kaldır
+    t = t.replace(/(?<=[\u3040-\u9FFF])\s+(?=[\u3040-\u9FFF])/g, '');
+  }
+  return t;
+}
+
+// ---------- Çeviri (önbellekli, aynı anda en fazla 4 istek) ----------
+const ceviriOnbellek = new Map();
+function cevir(metin, kM, hM) {
+  const anahtar = kM + '|' + hM + '|' + metin;
+  if (ceviriOnbellek.has(anahtar)) return ceviriOnbellek.get(anahtar);
+  const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(metin.slice(0, 450)) +
+              '&langpair=' + kM + '|' + hM;
+  const p = (async () => {
+    try {
+      const j = await (await fetch(url)).json();
+      const s = j.responseData && j.responseData.translatedText;
+      if (!s || /MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID/i.test(s)) return metin;
+      const ta = document.createElement('textarea');
+      ta.innerHTML = s; // &#39; gibi kodları çöz
+      return ta.value;
+    } catch { return metin; }
+  })();
+  ceviriOnbellek.set(anahtar, p);
+  return p;
+}
+
+async function havuz(isler, n, fn) {
+  const sonuc = new Array(isler.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, isler.length) }, async () => {
+    while (i < isler.length) { const k = i++; sonuc[k] = await fn(isler[k]); }
+  }));
+  return sonuc;
+}
+
+// ---------- Balona yazma ----------
+function zeminRengi(ctx, x, y, w, h) {
+  x = Math.max(0, x | 0); y = Math.max(0, y | 0);
+  w = Math.min(ctx.canvas.width - x, w | 0); h = Math.min(ctx.canvas.height - y, h | 0);
+  if (w < 3 || h < 3) return [255, 255, 255];
+  const d = ctx.getImageData(x, y, w, h).data;
+  let r = 0, g = 0, b = 0, n = 0;
+  const al = i => { r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; };
+  for (let i = 0; i < w; i++) { al(i * 4); al(((h - 1) * w + i) * 4); }
+  for (let j = 1; j < h - 1; j++) { al(j * w * 4); al((j * w + w - 1) * 4); }
+  return [r / n | 0, g / n | 0, b / n | 0];
+}
+
+function balonaYaz(ctx, b, metin, hM) {
+  const pad = 5;
+  const x = Math.max(0, b.x0 - pad), y = Math.max(0, b.y0 - pad);
+  const w = Math.min(ctx.canvas.width - x, b.x1 - b.x0 + pad * 2);
+  const h = Math.min(ctx.canvas.height - y, b.y1 - b.y0 + pad * 2);
+
+  // Balonun kendi zemin rengini kullan (koyu balonlarda beyaz yazı)
+  const [r, g, bl] = zeminRengi(ctx, x, y, w, h);
+  ctx.fillStyle = `rgb(${r},${g},${bl})`;
   ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = '#000';
+  ctx.fillStyle = (0.299 * r + 0.587 * g + 0.114 * bl) > 140 ? '#000' : '#fff';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
+  ctx.direction = hM === 'ar' ? 'rtl' : 'ltr';
 
-  let satirlar = [], boyut = 40;
+  let satirlar = [], boyut = Math.min(44, Math.floor(h / 1.15));
   for (; boyut >= 9; boyut--) {
     ctx.font = `bold ${boyut}px "Comic Sans MS", "Segoe UI", Arial, sans-serif`;
     satirlar = sar(ctx, metin, w - 6);
     if (satirlar.length * boyut * 1.15 <= h) break;
   }
-  let yy = y + (h - satirlar.length * boyut * 1.15) / 2;
+  let yy = y + Math.max(0, (h - satirlar.length * boyut * 1.15) / 2);
   satirlar.forEach(s => { ctx.fillText(s, x + w / 2, yy); yy += boyut * 1.15; });
 }
 
