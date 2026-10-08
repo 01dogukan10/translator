@@ -73,6 +73,7 @@
       <button id="geri">←</button>
       <div id="baslik"></div>
       <button id="dur" class="kirmizi" hidden>⏹</button>
+      <button id="cbzBtn" title=".cbz olarak kaydet">📦</button>
       <button id="ayarAc">🌐</button>
     </div>
     <div id="durum"></div>
@@ -232,7 +233,7 @@ function kartYap(it) {
   let kaynakYer = 'Dosya';
   if (it.tur === 'link') { try { kaynakYer = new URL(it.link).hostname; } catch { kaynakYer = 'Link'; } }
   const kd = it.kaynak === 'auto' ? (it.algilanan ? dilAdi(it.algilanan) : 'Otomatik') : dilAdi(it.kaynak);
-  a.textContent = `${kaynakYer} · ${it.sayfaSayisi || '?'} sayfa · ${kd} → ${hedefAdi(it.hedef)}`;
+  a.textContent = `${kaynakYer} · ${it.sayfaSayisi || '?'} sayfa · ${kd} → ${hedefAdi(it.hedef)}` + (it.cbz ? ' · 📦 kayıtlı' : '');
   ic.append(b, a);
   ic.onclick = () => ac(it.id);
 
@@ -315,7 +316,9 @@ function sheetAc(mod, veri) {
   const dugmeler = {
     yeni: [['Kaydet ve oku', 'oku', 'mavi'], ['Sadece kaydet', 'kaydet', 'gri'], ['İptal', 'iptal', 'gri']],
     duzenle: [['Kaydet', 'kaydet', 'mavi'], ['İptal', 'iptal', 'gri']],
-    ayar: [['Uygula ve yeniden çevir', 'kaydet', 'mavi'], ['İptal', 'iptal', 'gri']]
+    ayar: [['Uygula ve yeniden çevir', 'kaydet', 'mavi'],
+           ...(veri.cbz ? [['Kayıtlı çeviriyi sil, baştan çevir', 'sifirla', 'gri']] : []),
+           ['İptal', 'iptal', 'gri']]
   }[mod];
   $('sButonlar').textContent = '';
   dugmeler.forEach(([ad, eylem, sinif]) => {
@@ -361,11 +364,13 @@ async function sheetEylem(eylem) {
       const it = await getirId(veri.id);
       if (!it) return;
       if (it.kaynak !== kaynak) it.algilanan = undefined;
+      if (it.kaynak !== kaynak || it.hedef !== hedef) it.cbz = null;
       Object.assign(it, { baslik: ad, kaynak, hedef });
       await kaydetItem(it);
       kutuphaneyiYenile();
     } else { // ayar (okuyucu içinden)
       if (acik.kaynak !== kaynak) acik.algilanan = undefined;
+      if (eylem === 'sifirla' || acik.kaynak !== kaynak || acik.hedef !== hedef) acik.cbz = null;
       Object.assign(acik, { kaynak, hedef });
       await kaydetItem(acik);
       $('baslik').textContent = acik.baslik;
@@ -423,6 +428,17 @@ async function oku(it) {
   calisiyor = true; iptal = false;
   $('dur').hidden = false;
   try {
+    if (it.cbz && it.cbzKaynak === it.kaynak && it.cbzHedef === it.hedef) {
+      try {
+        it.sonOkunma = Date.now();
+        await kaydetItem(it);
+        await cbzGoster(it);
+        return;
+      } catch (e) {
+        console.warn('Kayıtlı çeviri açılamadı, yeniden çevriliyor:', e);
+        $('sayfalar').innerHTML = '';
+      }
+    }
     let liste;
     if (it.tur === 'dosya') {
       liste = it.dosyalar.map(b => ({ kaynak: URL.createObjectURL(b), proxy: false }));
@@ -446,6 +462,167 @@ async function oku(it) {
     calisiyor = false;
   }
 }
+
+// ===================== .CBZ (ZIP) YAZMA / OKUMA =====================
+// .cbz = içinde sayfa resimleri olan zip. JPEG zaten sıkışık olduğu için "sıkıştırmasız" (store) yazıyoruz.
+const CRC_TABLO = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return t;
+})();
+function crc32(u8) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < u8.length; i++) c = CRC_TABLO[(c ^ u8[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+async function zipYap(dosyalar) { // dosyalar: [{ ad, blob }]
+  const enc = new TextEncoder();
+  const d = new Date();
+  const saat = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const tarih = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  const parcalar = [], merkez = [];
+  let konum = 0;
+  for (const f of dosyalar) {
+    const ad = enc.encode(f.ad);
+    const boyut = f.blob.size;
+    const crc = crc32(new Uint8Array(await f.blob.arrayBuffer()));
+
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true);
+    lh.setUint16(10, saat, true); lh.setUint16(12, tarih, true); lh.setUint32(14, crc, true);
+    lh.setUint32(18, boyut, true); lh.setUint32(22, boyut, true); lh.setUint16(26, ad.length, true);
+    parcalar.push(lh.buffer, ad, f.blob);
+
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint16(12, saat, true); ch.setUint16(14, tarih, true); ch.setUint32(16, crc, true);
+    ch.setUint32(20, boyut, true); ch.setUint32(24, boyut, true); ch.setUint16(28, ad.length, true);
+    ch.setUint32(42, konum, true);
+    merkez.push(ch.buffer, ad);
+    konum += 30 + ad.length + boyut;
+  }
+  const merkezBoyut = merkez.reduce((t, p) => t + (p.byteLength !== undefined ? p.byteLength : p.size), 0);
+  const son = new DataView(new ArrayBuffer(22));
+  son.setUint32(0, 0x06054b50, true);
+  son.setUint16(8, dosyalar.length, true); son.setUint16(10, dosyalar.length, true);
+  son.setUint32(12, merkezBoyut, true); son.setUint32(16, konum, true);
+  return new Blob([...parcalar, ...merkez, son.buffer], { type: 'application/vnd.comicbook+zip' });
+}
+
+async function zipOku(blob) { // -> [{ ad, blob }]
+  const kuyruk = Math.min(blob.size, 65557);
+  const son = new DataView(await blob.slice(blob.size - kuyruk).arrayBuffer());
+  let e = -1;
+  for (let i = kuyruk - 22; i >= 0; i--) if (son.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  if (e < 0) throw new Error('Geçersiz .cbz dosyası');
+  const sayi = son.getUint16(e + 10, true), mBoyut = son.getUint32(e + 12, true), mKonum = son.getUint32(e + 16, true);
+  const m = new DataView(await blob.slice(mKonum, mKonum + mBoyut).arrayBuffer());
+  const dec = new TextDecoder();
+  const girdiler = [];
+  let p = 0;
+  for (let i = 0; i < sayi; i++) {
+    if (m.getUint32(p, true) !== 0x02014b50) break;
+    const yontem = m.getUint16(p + 10, true), csize = m.getUint32(p + 20, true);
+    const adU = m.getUint16(p + 28, true), exU = m.getUint16(p + 30, true), coU = m.getUint16(p + 32, true);
+    const konum = m.getUint32(p + 42, true);
+    const ad = dec.decode(new Uint8Array(m.buffer, p + 46, adU));
+    p += 46 + adU + exU + coU;
+    girdiler.push({ ad, yontem, csize, konum });
+  }
+  for (const g of girdiler) {
+    const lh = new DataView(await blob.slice(g.konum, g.konum + 30).arrayBuffer());
+    const bas = g.konum + 30 + lh.getUint16(26, true) + lh.getUint16(28, true);
+    let parca = blob.slice(bas, bas + g.csize);
+    if (g.yontem === 8) parca = await new Response(parca.stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob();
+    g.blob = parca;
+  }
+  return girdiler;
+}
+
+const xmlKacis = t => String(t).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+const guvenliAd = t => (String(t).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80)) || 'cizgi-roman';
+
+async function cbzYap(it, bloblar) {
+  const hane = Math.max(3, String(bloblar.length).length);
+  const dosyalar = bloblar.map((b, i) => ({ ad: String(i + 1).padStart(hane, '0') + '.jpg', blob: b }));
+  const xml = `<?xml version="1.0" encoding="utf-8"?>\n<ComicInfo>\n  <Title>${xmlKacis(it.baslik)}</Title>\n` +
+              `  <LanguageISO>${xmlKacis(it.hedef)}</LanguageISO>\n  <PageCount>${bloblar.length}</PageCount>\n</ComicInfo>\n`;
+  dosyalar.push({ ad: 'ComicInfo.xml', blob: new Blob([xml], { type: 'text/xml' }) });
+  return zipYap(dosyalar);
+}
+
+// Çeviri bitince: uygulamanın içine (galeriye düşmez) ve telefonun Documents klasörüne .cbz olarak kaydeder
+async function cbzKaydet(it, bloblar) {
+  it.cbz = await cbzYap(it, bloblar);
+  it.cbzKaynak = it.kaynak;
+  it.cbzHedef = it.hedef;
+  await kaydetItem(it);
+  return cbzDisaAktar(it);
+}
+
+let _Fs = null;
+const Fs = () => _Fs || (_Fs = Capacitor.registerPlugin('Filesystem'));
+const blobBase64 = b => new Promise((ok, hata) => {
+  const r = new FileReader();
+  r.onload = () => ok(String(r.result).split(',')[1] || '');
+  r.onerror = () => hata(r.error);
+  r.readAsDataURL(b);
+});
+
+// Büyük dosyayı köprüden tek seferde göndermemek için 3 MB'lık parçalarla yazar (3'ün katı: base64 parçaları temiz birleşir)
+async function dosyayaYaz(dizin, yol, blob) {
+  const PARCA = 3 * 1024 * 1024;
+  for (let o = 0; o < blob.size; o += PARCA) {
+    const data = await blobBase64(blob.slice(o, o + PARCA));
+    if (o === 0) await Fs().writeFile({ path: yol, data, directory: dizin, recursive: true });
+    else await Fs().appendFile({ path: yol, data, directory: dizin });
+  }
+}
+
+async function cbzDisaAktar(it) {
+  if (!it.cbz) return 'Kayıtlı çeviri yok';
+  const ad = guvenliAd(it.baslik) + '.cbz';
+  if (native) {
+    for (const [dizin, etiket] of [['DOCUMENTS', 'Documents/CizgiCevirici'], ['EXTERNAL', 'uygulamanın harici klasörü/CizgiCevirici']]) {
+      try {
+        await dosyayaYaz(dizin, 'CizgiCevirici/' + ad, it.cbz);
+        return `📦 ${etiket}/${ad}`;
+      } catch (e) { console.warn('Yazılamadı:', dizin, e); }
+    }
+    return 'Uygulama içine kaydedildi (telefon klasörüne yazılamadı)';
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(it.cbz);
+  a.download = ad;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  return `📦 ${ad} indirildi`;
+}
+
+// Kayıtlı çeviriyi (OCR ve çeviri yapmadan) doğrudan gösterir
+async function cbzGoster(it) {
+  $('durum').textContent = 'Kayıtlı çeviri açılıyor...';
+  const tipler = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+  const sayfalar = (await zipOku(it.cbz))
+    .filter(g => /\.(jpe?g|png|webp)$/i.test(g.ad))
+    .sort((a, b) => a.ad.localeCompare(b.ad, undefined, { numeric: true }));
+  if (!sayfalar.length) throw new Error('Kayıtlı dosya boş');
+  for (const g of sayfalar) {
+    const im = new Image();
+    im.decoding = 'async';
+    im.src = URL.createObjectURL(g.blob.slice(0, g.blob.size, tipler[g.ad.split('.').pop().toLowerCase()]));
+    $('sayfalar').appendChild(im);
+  }
+  $('durum').textContent = `Kayıtlı çeviri açıldı ✅ (${sayfalar.length} sayfa)`;
+}
+
+$('cbzBtn').onclick = async () => {
+  if (!acik || !acik.cbz) { $('durum').textContent = 'Çeviri bitince otomatik kaydedilir; henüz kayıtlı bir çeviri yok.'; return; }
+  $('durum').textContent = '.cbz kaydediliyor...';
+  try { $('durum').textContent = await cbzDisaAktar(acik); }
+  catch (e) { $('durum').textContent = 'Hata: ' + e.message; }
+};
 
 // ===================== DİL ALGILAMA =====================
 const HARF = {
@@ -556,28 +733,38 @@ async function hepsiniIsle(liste, it) {
     if (kM === hM) throw new Error(`Kaynak (${dilAdi(k)}) ve hedef dil aynı. 🌐 düğmesinden birini değiştir.`);
 
     await ociGetir(k);
+    const bloblar = [];
+    let hatali = 0;
     let sonraki = resimYukle(liste[0]).catch(() => null);
     for (let i = 0; i < liste.length && !iptal; i++) {
       const img = await sonraki;
       sonraki = i + 1 < liste.length ? resimYukle(liste[i + 1]).catch(() => null) : null;
       if (iptal) break;
-      if (img && img.naturalWidth >= 300 && img.naturalHeight >= 300) {
+      if (!img) hatali++;
+      else if (img.naturalWidth >= 300 && img.naturalHeight >= 300) {
         try {
           const etiket = `${dilAdi(k)} → ${hedefAdi(hM)} · sayfa ${i + 1}/${liste.length}`;
           const tuval = await sayfaIsle(img, k, kM, hM, etiket);
-          // Bellek tasarrufu: işlenen sayfayı hafif bir resme çevir
-          tuval.toBlob(b => {
-            if (!b) return;
+          // İşlenen sayfayı JPEG'e çevir: hem belleği rahatlatır hem .cbz için saklanır
+          const b = await new Promise(r => tuval.toBlob(r, 'image/jpeg', 0.9));
+          if (b) {
+            bloblar.push(b);
             const im = new Image();
             im.src = URL.createObjectURL(b);
             tuval.replaceWith(im);
-          }, 'image/jpeg', 0.88);
-        } catch (e) { console.warn('Sayfa atlandı:', e); }
+          } else hatali++;
+        } catch (e) { console.warn('Sayfa atlandı:', e); hatali++; }
       }
       delete liste[i].img;
       if (!liste[i].proxy) URL.revokeObjectURL(liste[i].kaynak);
     }
-    if (!$('okuyucu').hidden || iptal) $('durum').textContent = iptal ? 'Durduruldu ⏹' : `Bitti ✅ (${liste.length} sayfa)`;
+    if (iptal) { $('durum').textContent = 'Durduruldu ⏹'; return; }
+    if (hatali) { $('durum').textContent = `Bitti ⚠️ (${hatali} sayfa yüklenemedi, çeviri kaydedilmedi)`; return; }
+    if (bloblar.length) {
+      $('durum').textContent = 'Çeviri .cbz olarak kaydediliyor...';
+      const mesaj = await cbzKaydet(it, bloblar);
+      $('durum').textContent = `Bitti ✅ (${bloblar.length} sayfa) · ${mesaj}`;
+    } else $('durum').textContent = 'Bitti ✅';
   } finally {
     liste.forEach(o => delete o.img);
   }
