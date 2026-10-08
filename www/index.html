@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Çizgi Çevirici</title>
+<style>
+  body{margin:0;font-family:system-ui,sans-serif;background:#111;color:#eee}
+  header{padding:10px;padding-top:max(10px,env(safe-area-inset-top));display:flex;flex-wrap:wrap;gap:8px;background:#1d1d1d;position:sticky;top:0;z-index:5}
+  input[type=text]{flex:1 1 100%;padding:10px;border-radius:8px;border:0;font-size:15px;background:#333;color:#fff}
+  select,button,label.btn{padding:10px 12px;border-radius:8px;border:0;background:#3b82f6;color:#fff;font-size:15px}
+  select{background:#333}
+  input[type=file]{display:none}
+  #durum{width:100%;font-size:13px;color:#aaa}
+  canvas{width:100%;display:block;margin-bottom:2px}
+</style>
+</head>
+<body>
+<header>
+  <input id="link" type="text" placeholder="Bölüm sayfası veya resim linki yapıştır (https://...)">
+  <button id="git">🔗 Linkten yükle</button>
+  <label class="btn">📂 Dosyadan<input id="dosya" type="file" accept="image/*" multiple></label>
+  <select id="dil">
+    <option value="eng">İngilizce</option>
+    <option value="jpn">Japonca</option>
+    <option value="kor">Korece</option>
+    <option value="chi_sim">Çince</option>
+    <option value="fra">Fransızca</option>
+    <option value="spa">İspanyolca</option>
+  </select>
+  <div id="durum">Link yapıştır ya da dosya seç.</div>
+</header>
+<div id="sayfalar"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const kod = {eng:'en', jpn:'ja', kor:'ko', chi_sim:'zh-CN', fra:'fr', spa:'es'};
+
+// Uygulamada (Capacitor) CORS sorunu yok: istekler telefonun kendi ağ katmanından gider.
+// Tarayıcıda açılırsa eski usul proxy kullanılır.
+const native = !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
+const Http = native ? Capacitor.Plugins.CapacitorHttp : null;
+const UA = 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36';
+const proxyResim = u => 'https://wsrv.nl/?url=' + encodeURIComponent(u);
+const proxySayfa = u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u);
+
+let calisiyor = false;
+
+$('git').onclick = async () => {
+  const link = $('link').value.trim();
+  if (!link || calisiyor) return;
+  try {
+    $('durum').textContent = 'Sayfa getiriliyor...';
+    const resimler = await resimLinkleriniBul(link);
+    if (!resimler.length) throw new Error('Bu linkte resim bulunamadı.');
+    await hepsiniIsle(resimler.map(u => ({ kaynak: u, proxy: true, ref: link })));
+  } catch (e) { $('durum').textContent = 'Hata: ' + e.message; }
+};
+
+$('dosya').onchange = async e => {
+  if (calisiyor) return;
+  const liste = [...e.target.files].map(f => ({ kaynak: URL.createObjectURL(f), proxy: false }));
+  await hepsiniIsle(liste);
+};
+
+async function sayfaHtml(link) {
+  if (native) {
+    const r = await Http.get({ url: link, headers: { 'User-Agent': UA } });
+    return typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
+  }
+  return (await fetch(proxySayfa(link))).text();
+}
+
+async function resimKaynagi(oge) {
+  if (!oge.proxy) return oge.kaynak;
+  if (native) {
+    const r = await Http.get({
+      url: oge.kaynak,
+      headers: { 'User-Agent': UA, 'Referer': oge.ref || oge.kaynak },
+      responseType: 'blob'
+    });
+    const h = r.headers || {};
+    const tip = (h['Content-Type'] || h['content-type'] || 'image/jpeg').split(';')[0];
+    return `data:${tip};base64,${r.data}`;
+  }
+  return proxyResim(oge.kaynak);
+}
+
+async function resimLinkleriniBul(link) {
+  if (/\.(jpe?g|png|webp|gif)(\?|$)/i.test(link)) return [link];
+
+  const html = await sayfaHtml(link);
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const baz = (doc.querySelector('base') || {}).href || link;
+  const gorulen = new Set(), sonuc = [];
+
+  doc.querySelectorAll('img').forEach(img => {
+    const ham = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') ||
+                img.getAttribute('data-original') || img.getAttribute('src');
+    if (!ham) return;
+    let tam;
+    try { tam = new URL(ham.trim(), baz).href; } catch { return; }
+    if (!/^https?:/.test(tam) || gorulen.has(tam)) return;
+    if (/logo|avatar|icon|banner|sprite|thumb|ads?[\/_.-]|\.svg/i.test(tam)) return;
+    gorulen.add(tam);
+    sonuc.push(tam);
+  });
+  return sonuc;
+}
+
+async function hepsiniIsle(liste) {
+  calisiyor = true;
+  $('sayfalar').innerHTML = '';
+  let worker;
+  try {
+    const dil = $('dil').value;
+    $('durum').textContent = 'OCR hazırlanıyor (ilk seferde dil verisi iner)...';
+    worker = await Tesseract.createWorker(dil, 1);
+    for (let i = 0; i < liste.length; i++) {
+      $('durum').textContent = `Sayfa ${i + 1}/${liste.length} işleniyor...`;
+      try { await sayfaIsle(liste[i], worker, dil); }
+      catch (e) { console.warn('Atlandı:', liste[i].kaynak, e); }
+    }
+    $('durum').textContent = `Bitti ✅ (${liste.length} resim tarandı)`;
+  } catch (e) {
+    $('durum').textContent = 'Hata: ' + e.message;
+  } finally {
+    if (worker) await worker.terminate();
+    calisiyor = false;
+  }
+}
+
+async function sayfaIsle(oge, worker, dil) {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.src = await resimKaynagi(oge);
+  await img.decode();
+  if (img.naturalWidth < 300 || img.naturalHeight < 300) return;
+
+  const tuval = document.createElement('canvas');
+  tuval.width = img.naturalWidth;
+  tuval.height = img.naturalHeight;
+  const ctx = tuval.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  $('sayfalar').appendChild(tuval);
+
+  const { data } = await worker.recognize(tuval);
+  const paragraflar = (data.paragraphs || data.blocks.flatMap(b => b.paragraphs))
+    .filter(p => p.confidence > 55 && p.text.trim().length > 1);
+
+  const cevrilmis = await Promise.all(
+    paragraflar.map(p => ceviriGetir(p.text.replace(/\s+/g, ' ').trim(), dil))
+  );
+  paragraflar.forEach((p, i) => balonaYaz(ctx, p.bbox, cevrilmis[i]));
+}
+
+async function ceviriGetir(metin, dil) {
+  const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(metin) +
+              '&langpair=' + kod[dil] + '|tr';
+  try {
+    const j = await (await fetch(url)).json();
+    return j.responseData.translatedText || metin;
+  } catch { return metin; }
+}
+
+function balonaYaz(ctx, b, metin) {
+  const pad = 4;
+  const x = b.x0 - pad, y = b.y0 - pad, w = b.x1 - b.x0 + pad * 2, h = b.y1 - b.y0 + pad * 2;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#000';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+
+  let satirlar = [], boyut = 40;
+  for (; boyut >= 9; boyut--) {
+    ctx.font = `bold ${boyut}px "Comic Sans MS", "Segoe UI", Arial, sans-serif`;
+    satirlar = sar(ctx, metin, w - 6);
+    if (satirlar.length * boyut * 1.15 <= h) break;
+  }
+  let yy = y + (h - satirlar.length * boyut * 1.15) / 2;
+  satirlar.forEach(s => { ctx.fillText(s, x + w / 2, yy); yy += boyut * 1.15; });
+}
+
+function sar(ctx, metin, genislik) {
+  const satirlar = [];
+  let satir = '';
+  for (const k of metin.split(' ')) {
+    const dene = satir ? satir + ' ' + k : k;
+    if (ctx.measureText(dene).width > genislik && satir) { satirlar.push(satir); satir = k; }
+    else satir = dene;
+  }
+  if (satir) satirlar.push(satir);
+  return satirlar;
+}
+</script>
+</body>
+</html>
