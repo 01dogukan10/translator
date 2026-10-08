@@ -5,38 +5,100 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Çizgi Çevirici</title>
 <style>
+  *{box-sizing:border-box}
   body{margin:0;font-family:system-ui,sans-serif;background:#111;color:#eee}
-  header{padding:10px;padding-top:max(10px,env(safe-area-inset-top));display:flex;flex-wrap:wrap;gap:8px;background:#1d1d1d;position:sticky;top:0;z-index:5}
-  input[type=text]{flex:1 1 100%;padding:10px;border-radius:8px;border:0;font-size:15px;background:#333;color:#fff}
-  select,button,label.btn{padding:10px 12px;border-radius:8px;border:0;background:#3b82f6;color:#fff;font-size:15px}
-  select{background:#333;flex:1;min-width:0}
-  button#dur{background:#dc2626}
-  button#degis{background:#444;flex:0 0 auto}
-  .diller{display:flex;gap:6px;width:100%;align-items:center}
-  input[type=file]{display:none}
-  #durum{width:100%;font-size:13px;color:#aaa}
-  #sayfalar canvas,#sayfalar img{width:100%;display:block;margin-bottom:2px}
   [hidden]{display:none!important}
+  button,label.btn,select,input[type=text]{font-size:15px;border:0;border-radius:10px;padding:11px 14px;color:#fff;background:#333}
+  button,label.btn{cursor:pointer}
+  .mavi{background:#3b82f6}.gri{background:#444}.kirmizi{background:#dc2626}
+  input[type=file]{display:none}
+  input[type=text]{width:100%;background:#2a2a2a}
+  select{flex:1;min-width:0}
+  .satir{display:flex;gap:8px;align-items:center}
+
+  /* Kütüphane */
+  #kutuphane{padding:14px;padding-top:max(14px,env(safe-area-inset-top));max-width:720px;margin:0 auto}
+  h1{font-size:22px;margin:4px 0 14px}
+  h2{font-size:16px;color:#aaa;margin:22px 0 8px}
+  .ekle{display:flex;flex-direction:column;gap:8px}
+  .ekle .satir button,.ekle .satir label{flex:1;text-align:center}
+  #kdurum{font-size:13px;color:#fbbf24;min-height:16px}
+  .kart{display:flex;align-items:center;gap:6px;background:#1d1d1d;border-radius:12px;margin-bottom:8px;padding:6px 6px 6px 14px}
+  .kartic{flex:1;min-width:0;padding:8px 0;cursor:pointer}
+  .kb{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ka{font-size:12px;color:#999;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .kart button{background:transparent;padding:10px}
+  #bos{color:#777;font-size:14px}
+
+  /* Okuyucu */
+  #ust{position:fixed;top:0;left:0;right:0;z-index:10;background:rgba(24,24,24,.96);padding:6px 10px;padding-top:max(6px,env(safe-area-inset-top));transition:transform .2s}
+  #ust.gizli{transform:translateY(-110%)}
+  #ust button{padding:8px 12px;background:#333}
+  #ust button.kirmizi{background:#dc2626}
+  #baslik{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+  #durum{font-size:12px;color:#aaa;margin-top:4px;min-height:15px}
+  #sayfalar{max-width:900px;margin:0 auto}
+  #sayfalar canvas,#sayfalar img{width:100%;display:block;margin-bottom:2px}
+
+  /* Pencere */
+  #sheet{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:20;display:flex;align-items:flex-end;justify-content:center}
+  #sheet .kutu{background:#1d1d1d;width:100%;max-width:560px;border-radius:18px 18px 0 0;padding:18px;padding-bottom:max(18px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px}
+  #sheet h3{margin:0}
+  #sBilgi{font-size:13px;color:#9ca3af}
+  #sButonlar{display:flex;flex-direction:column;gap:8px;margin-top:4px}
 </style>
 </head>
 <body>
-<header>
-  <input id="link" type="text" placeholder="Bölüm sayfası veya resim linki yapıştır (https://...)">
-  <button id="git">🔗 Linkten yükle</button>
-  <label class="btn">📂 Dosyadan<input id="dosya" type="file" accept="image/*" multiple></label>
-  <button id="dur" hidden>⏹ Durdur</button>
-  <div class="diller">
-    <select id="kaynak"></select>
-    <button id="degis" title="Dilleri değiştir">⇄</button>
-    <select id="hedef"></select>
+
+<!-- ===== KİTAPLIK ===== -->
+<section id="kutuphane">
+  <h1>📚 Çizgi Çevirici</h1>
+  <div class="ekle">
+    <input id="girdi" type="text" inputmode="url" autocomplete="off" placeholder="Bölüm veya resim linkini yapıştır (https://...)">
+    <div class="satir">
+      <button id="devam" class="mavi">Devam →</button>
+      <label class="btn gri">📂 Dosyadan ekle<input id="dosya" type="file" accept="image/*" multiple></label>
+    </div>
+    <div id="kdurum"></div>
   </div>
-  <div id="durum">Link yapıştır ya da dosya seç.</div>
-</header>
-<div id="sayfalar"></div>
+  <h2>Kitaplığım</h2>
+  <div id="liste"></div>
+  <p id="bos">Henüz bir şey eklemedin. Yukarıya bir link yapıştırıp Devam'a bas.</p>
+</section>
+
+<!-- ===== OKUYUCU (sadece sayfalar) ===== -->
+<section id="okuyucu" hidden>
+  <div id="ust">
+    <div class="satir">
+      <button id="geri">←</button>
+      <div id="baslik"></div>
+      <button id="dur" class="kirmizi" hidden>⏹</button>
+      <button id="ayarAc">🌐</button>
+    </div>
+    <div id="durum"></div>
+  </div>
+  <div id="sayfalar"></div>
+</section>
+
+<!-- ===== KAYIT / DÜZENLEME / DİL AYARI PENCERESİ ===== -->
+<div id="sheet" hidden>
+  <div class="kutu">
+    <h3 id="sBaslik"></h3>
+    <input id="sAd" type="text" placeholder="Başlık">
+    <div id="sBilgi"></div>
+    <div class="satir">
+      <select id="sKaynak"></select>
+      <button id="sDegis" class="gri" title="Dilleri değiştir">⇄</button>
+      <select id="sHedef"></select>
+    </div>
+    <div id="sButonlar"></div>
+  </div>
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
+const bekle = ms => new Promise(r => setTimeout(r, ms));
 
 // [Tesseract kodu, çeviri kodu, görünen ad]
 const DILLER = [
@@ -48,32 +110,35 @@ const DILLER = [
 const bul = t => DILLER.find(d => d[0] === t) || [];
 const mKodu = t => bul(t)[1];
 const dilAdi = t => bul(t)[2] || t;
+const hedefAdi = m => (DILLER.find(d => d[1] === m) || [])[2] || m;
 
-// ---------- Ayarları saklama ----------
+// ---------- Küçük ayarlar (localStorage) ----------
 const depo = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch {} };
 const onbellekOku = k => { try { return JSON.parse(depo('dilOnbellek') || '{}')[k]; } catch { return undefined; } };
 const onbellekYaz = (k, v) => { try { const o = JSON.parse(depo('dilOnbellek') || '{}'); o[k] = v; depo('dilOnbellek', JSON.stringify(o)); } catch {} };
 
-function baslat() {
-  $('kaynak').innerHTML = '<option value="auto">🔎 Otomatik algıla</option>' +
-    DILLER.map(d => `<option value="${d[0]}">${d[2]}</option>`).join('');
-  $('hedef').innerHTML = DILLER.map(d => `<option value="${d[1]}">${d[2]}</option>`).join('');
-  $('kaynak').value = depo('kaynak') || 'auto';
-  $('hedef').value = depo('hedef') || 'tr';
-  if (!$('kaynak').value) $('kaynak').value = 'auto';
-  if (!$('hedef').value) $('hedef').value = 'tr';
+// ---------- Kitaplık veritabanı (IndexedDB: linkler ve dosyalar burada saklanır) ----------
+let _db = null;
+const veritabani = () => _db || (_db = new Promise((ok, hata) => {
+  const r = indexedDB.open('cizgi-cevirici', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('kitaplik', { keyPath: 'id' });
+  r.onsuccess = () => ok(r.result);
+  r.onerror = () => hata(r.error);
+}));
+async function idb(mod, fn) {
+  const db = await veritabani();
+  return new Promise((ok, hata) => {
+    const tx = db.transaction('kitaplik', mod);
+    const r = fn(tx.objectStore('kitaplik'));
+    tx.oncomplete = () => ok(r && r.result);
+    tx.onerror = tx.onabort = () => hata(tx.error || new Error('Veritabanı hatası'));
+  });
 }
-baslat();
-$('kaynak').onchange = () => depo('kaynak', $('kaynak').value);
-$('hedef').onchange = () => depo('hedef', $('hedef').value);
-$('degis').onclick = () => {
-  const k = $('kaynak').value;
-  if (k === 'auto') { $('durum').textContent = 'Dilleri değiştirmek için önce kaynak dili seç.'; return; }
-  const yeniKaynak = (DILLER.find(d => d[1] === $('hedef').value) || [])[0];
-  $('hedef').value = mKodu(k);
-  if (yeniKaynak) $('kaynak').value = yeniKaynak;
-  depo('kaynak', $('kaynak').value); depo('hedef', $('hedef').value);
-};
+const hepsiniGetir = () => idb('readonly', s => s.getAll());
+const getirId = id => idb('readonly', s => s.get(id));
+const kaydetItem = it => idb('readwrite', s => s.put(it));
+const silItem = id => idb('readwrite', s => s.delete(id));
+const yeniId = () => 'k' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
 // ---------- Ağ: uygulamada doğrudan, tarayıcıda proxy ile ----------
 const native = !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
@@ -81,27 +146,6 @@ const Http = native ? Capacitor.Plugins.CapacitorHttp : null;
 const UA = 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36';
 const proxyResim = u => 'https://wsrv.nl/?url=' + encodeURIComponent(u);
 const proxySayfa = u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u);
-
-let calisiyor = false, iptal = false;
-
-$('dur').onclick = () => { iptal = true; $('durum').textContent = 'Durduruluyor...'; };
-
-$('git').onclick = async () => {
-  const link = $('link').value.trim();
-  if (!link || calisiyor) return;
-  try {
-    $('durum').textContent = 'Sayfa getiriliyor...';
-    const resimler = await resimLinkleriniBul(link);
-    if (!resimler.length) throw new Error('Bu linkte resim bulunamadı.');
-    await hepsiniIsle(resimler.map(u => ({ kaynak: u, proxy: true, ref: link })), seriAnahtari(link));
-  } catch (e) { $('durum').textContent = 'Hata: ' + e.message; }
-};
-
-$('dosya').onchange = async e => {
-  if (calisiyor) return;
-  const liste = [...e.target.files].map(f => ({ kaynak: URL.createObjectURL(f), proxy: false }));
-  if (liste.length) await hepsiniIsle(liste, null);
-};
 
 function seriAnahtari(link) {
   try {
@@ -143,11 +187,20 @@ async function resimYukle(oge, tut = false) {
   return img;
 }
 
-async function resimLinkleriniBul(link) {
-  if (/\.(jpe?g|png|webp|gif)(\?|$)/i.test(link)) return [link];
+// Linkteki başlığı ve sayfa resimlerini bulur
+async function sayfaBilgisi(link) {
+  if (/\.(jpe?g|png|webp|gif)(\?|$)/i.test(link)) {
+    let ad = 'Resim';
+    try { ad = decodeURIComponent(new URL(link).pathname.split('/').pop()) || ad; } catch {}
+    return { baslik: ad, resimler: [link] };
+  }
   const doc = new DOMParser().parseFromString(await sayfaHtml(link), 'text/html');
+  const og = doc.querySelector('meta[property="og:title"]');
+  let baslik = ((og && og.content) || doc.title || '').replace(/\s+/g, ' ').trim();
+  if (!baslik) { try { baslik = new URL(link).hostname; } catch { baslik = 'Adsız'; } }
+
   const baz = (doc.querySelector('base') || {}).href || link;
-  const gorulen = new Set(), sonuc = [];
+  const gorulen = new Set(), resimler = [];
   doc.querySelectorAll('img').forEach(img => {
     const ham = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') ||
                 img.getAttribute('data-original') || img.getAttribute('src');
@@ -157,12 +210,244 @@ async function resimLinkleriniBul(link) {
     if (!/^https?:/.test(tam) || gorulen.has(tam)) return;
     if (/logo|avatar|icon|banner|sprite|thumb|ads?[\/_.-]|\.svg/i.test(tam)) return;
     gorulen.add(tam);
-    sonuc.push(tam);
+    resimler.push(tam);
   });
-  return sonuc;
+  return { baslik: baslik.slice(0, 100), resimler };
 }
 
-// ---------- Dil algılama ----------
+// ===================== ARAYÜZ: KİTAPLIK =====================
+const kdurum = m => { $('kdurum').textContent = m || ''; };
+
+function kartYap(it) {
+  const kart = document.createElement('div');
+  kart.className = 'kart';
+
+  const ic = document.createElement('div');
+  ic.className = 'kartic';
+  const b = document.createElement('div');
+  b.className = 'kb';
+  b.textContent = (it.tur === 'link' ? '🔗 ' : '📁 ') + it.baslik; // textContent: sayfadan gelen başlık güvenle yazılır
+  const a = document.createElement('div');
+  a.className = 'ka';
+  let kaynakYer = 'Dosya';
+  if (it.tur === 'link') { try { kaynakYer = new URL(it.link).hostname; } catch { kaynakYer = 'Link'; } }
+  const kd = it.kaynak === 'auto' ? (it.algilanan ? dilAdi(it.algilanan) : 'Otomatik') : dilAdi(it.kaynak);
+  a.textContent = `${kaynakYer} · ${it.sayfaSayisi || '?'} sayfa · ${kd} → ${hedefAdi(it.hedef)}`;
+  ic.append(b, a);
+  ic.onclick = () => ac(it.id);
+
+  const duz = document.createElement('button');
+  duz.textContent = '✏️';
+  duz.onclick = () => sheetAc('duzenle', it);
+  const sil = document.createElement('button');
+  sil.textContent = '🗑';
+  sil.onclick = async () => {
+    if (!confirm(`"${it.baslik}" kitaplıktan silinsin mi?`)) return;
+    await silItem(it.id);
+    kutuphaneyiYenile();
+  };
+  kart.append(ic, duz, sil);
+  return kart;
+}
+
+async function kutuphaneyiYenile() {
+  const liste = (await hepsiniGetir()).sort((a, b) => (b.sonOkunma || b.eklenme) - (a.sonOkunma || a.eklenme));
+  $('liste').textContent = '';
+  $('bos').hidden = liste.length > 0;
+  liste.forEach(it => $('liste').appendChild(kartYap(it)));
+}
+
+$('devam').onclick = async () => {
+  const link = $('girdi').value.trim();
+  if (!/^https?:\/\//i.test(link)) { kdurum('Geçerli bir link gir (https:// ile başlamalı).'); return; }
+  try {
+    const mevcut = (await hepsiniGetir()).find(x => x.link === link);
+    if (mevcut) { kdurum('Bu link zaten kitaplıkta, açılıyor...'); ac(mevcut.id); return; }
+  } catch {}
+  $('devam').disabled = true;
+  kdurum('Link kontrol ediliyor...');
+  try {
+    const b = await sayfaBilgisi(link);
+    if (!b.resimler.length) throw new Error('Bu linkte sayfa (resim) bulunamadı.');
+    kdurum('');
+    sheetAc('yeni', {
+      tur: 'link', link, baslik: b.baslik, resimler: b.resimler, sayfaSayisi: b.resimler.length,
+      kaynak: depo('kaynak') || 'auto', hedef: depo('hedef') || 'tr'
+    });
+  } catch (e) { kdurum('Hata: ' + e.message); }
+  finally { $('devam').disabled = false; }
+};
+$('girdi').addEventListener('keydown', e => { if (e.key === 'Enter') $('devam').click(); });
+
+$('dosya').onchange = e => {
+  const dosyalar = [...e.target.files]
+    .filter(f => f.type.startsWith('image/'))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  e.target.value = '';
+  if (!dosyalar.length) return;
+  const ilk = dosyalar[0].name.replace(/\.[^.]+$/, '');
+  sheetAc('yeni', {
+    tur: 'dosya', dosyalar, sayfaSayisi: dosyalar.length,
+    baslik: dosyalar.length > 1 ? `${ilk} (+${dosyalar.length - 1})` : ilk,
+    kaynak: depo('kaynak') || 'auto', hedef: depo('hedef') || 'tr'
+  });
+};
+
+// ===================== PENCERE (kaydet / düzenle / dil ayarı) =====================
+let sheet = null;
+
+function dilKutulariniDoldur() {
+  $('sKaynak').innerHTML = '<option value="auto">🔎 Otomatik algıla</option>' +
+    DILLER.map(d => `<option value="${d[0]}">${d[2]}</option>`).join('');
+  $('sHedef').innerHTML = DILLER.map(d => `<option value="${d[1]}">${d[2]}</option>`).join('');
+}
+
+function sheetAc(mod, veri) {
+  sheet = { mod, veri };
+  $('sBaslik').textContent = { yeni: 'Kitaplığa ekle', duzenle: 'Düzenle', ayar: 'Dil ayarları' }[mod];
+  $('sAd').hidden = mod === 'ayar';
+  $('sAd').value = veri.baslik || '';
+  $('sBilgi').textContent = mod === 'yeni' ? `${veri.sayfaSayisi} sayfa bulundu.` : '';
+  dilKutulariniDoldur();
+  $('sKaynak').value = veri.kaynak || 'auto';
+  $('sHedef').value = veri.hedef || 'tr';
+
+  const dugmeler = {
+    yeni: [['Kaydet ve oku', 'oku', 'mavi'], ['Sadece kaydet', 'kaydet', 'gri'], ['İptal', 'iptal', 'gri']],
+    duzenle: [['Kaydet', 'kaydet', 'mavi'], ['İptal', 'iptal', 'gri']],
+    ayar: [['Uygula ve yeniden çevir', 'kaydet', 'mavi'], ['İptal', 'iptal', 'gri']]
+  }[mod];
+  $('sButonlar').textContent = '';
+  dugmeler.forEach(([ad, eylem, sinif]) => {
+    const b = document.createElement('button');
+    b.textContent = ad; b.className = sinif;
+    b.onclick = () => sheetEylem(eylem);
+    $('sButonlar').appendChild(b);
+  });
+  $('sheet').hidden = false;
+}
+const sheetKapat = () => { $('sheet').hidden = true; sheet = null; };
+$('sheet').addEventListener('click', e => { if (e.target === $('sheet')) sheetKapat(); });
+
+$('sDegis').onclick = () => {
+  const k = $('sKaynak').value;
+  if (k === 'auto') return;
+  const yeniKaynak = (DILLER.find(d => d[1] === $('sHedef').value) || [])[0];
+  $('sHedef').value = mKodu(k);
+  if (yeniKaynak) $('sKaynak').value = yeniKaynak;
+};
+
+async function sheetEylem(eylem) {
+  if (eylem === 'iptal' || !sheet) return sheetKapat();
+  const { mod, veri } = sheet;
+  const ad = ($('sAd').value.trim() || veri.baslik || 'Adsız').slice(0, 100);
+  const kaynak = $('sKaynak').value, hedef = $('sHedef').value;
+  depo('kaynak', kaynak); depo('hedef', hedef);
+  sheetKapat();
+
+  try {
+    if (mod === 'yeni') {
+      const it = {
+        id: yeniId(), tur: veri.tur, baslik: ad, kaynak, hedef,
+        sayfaSayisi: veri.sayfaSayisi, eklenme: Date.now(), sonOkunma: null
+      };
+      if (veri.tur === 'link') { it.link = veri.link; it.resimler = veri.resimler; }
+      else it.dosyalar = veri.dosyalar;
+      await kaydetItem(it);
+      $('girdi').value = '';
+      await kutuphaneyiYenile();
+      if (eylem === 'oku') ac(it.id);
+    } else if (mod === 'duzenle') {
+      const it = await getirId(veri.id);
+      if (!it) return;
+      if (it.kaynak !== kaynak) it.algilanan = undefined;
+      Object.assign(it, { baslik: ad, kaynak, hedef });
+      await kaydetItem(it);
+      kutuphaneyiYenile();
+    } else { // ayar (okuyucu içinden)
+      if (acik.kaynak !== kaynak) acik.algilanan = undefined;
+      Object.assign(acik, { kaynak, hedef });
+      await kaydetItem(acik);
+      $('baslik').textContent = acik.baslik;
+      yenidenBaslat();
+    }
+  } catch (e) { kdurum('Kaydedilemedi: ' + e.message); }
+}
+
+// ===================== ARAYÜZ: OKUYUCU =====================
+let acik = null;          // şu an okunan kitaplık öğesi
+let calisiyor = false, iptal = false;
+
+function ekranGoster(ad) {
+  $('kutuphane').hidden = ad !== 'kutuphane';
+  $('okuyucu').hidden = ad !== 'okuyucu';
+  window.scrollTo(0, 0);
+}
+
+async function ac(id) {
+  if (!$('okuyucu').hidden) return;
+  const it = await getirId(id);
+  if (!it) return;
+  acik = it;
+  history.pushState({ ekran: 'oku' }, ''); // telefonun geri tuşu okuyucudan kitaplığa döner
+  ekranGoster('okuyucu');
+  $('baslik').textContent = it.baslik;
+  $('ust').classList.remove('gizli');
+  $('sayfalar').style.paddingTop = ($('ust').offsetHeight + 4) + 'px';
+  await yenidenBaslat();
+}
+
+async function yenidenBaslat() {
+  iptal = true;
+  while (calisiyor) await bekle(100);
+  $('sayfalar').innerHTML = '';
+  if (acik) await oku(acik);
+}
+
+async function geriDon() {
+  iptal = true;
+  acik = null;
+  ekranGoster('kutuphane');
+  while (calisiyor) await bekle(100);
+  if (!acik) $('sayfalar').innerHTML = '';
+  kutuphaneyiYenile().catch(() => {});
+}
+
+$('geri').onclick = () => history.back();
+window.addEventListener('popstate', () => { if (!$('okuyucu').hidden) geriDon(); });
+$('dur').onclick = () => { iptal = true; $('durum').textContent = 'Durduruluyor...'; };
+$('ayarAc').onclick = () => acik && sheetAc('ayar', acik);
+$('sayfalar').onclick = () => $('ust').classList.toggle('gizli'); // sayfaya dokununca üst çubuk gizlenir/görünür
+
+async function oku(it) {
+  calisiyor = true; iptal = false;
+  $('dur').hidden = false;
+  try {
+    let liste;
+    if (it.tur === 'dosya') {
+      liste = it.dosyalar.map(b => ({ kaynak: URL.createObjectURL(b), proxy: false }));
+    } else {
+      $('durum').textContent = 'Sayfalar getiriliyor...';
+      let resimler = [];
+      try { resimler = (await sayfaBilgisi(it.link)).resimler; } catch (e) { if (!(it.resimler || []).length) throw e; }
+      if (!resimler.length) resimler = it.resimler || [];
+      if (!resimler.length) throw new Error('Sayfalar bulunamadı.');
+      it.resimler = resimler; it.sayfaSayisi = resimler.length;
+      liste = resimler.map(u => ({ kaynak: u, proxy: true, ref: it.link }));
+    }
+    it.sonOkunma = Date.now();
+    await kaydetItem(it);
+    await hepsiniIsle(liste, it);
+  } catch (e) {
+    $('durum').textContent = 'Hata: ' + e.message;
+    $('ust').classList.remove('gizli');
+  } finally {
+    $('dur').hidden = true;
+    calisiyor = false;
+  }
+}
+
+// ===================== DİL ALGILAMA =====================
 const HARF = {
   ko: /[\uAC00-\uD7AF\u1100-\u11FF]/g,
   ja: /[\u3040-\u30FF]/g,
@@ -219,7 +504,7 @@ function ornekKirp(img, baslangic) {
 async function dilAlgila(liste, anahtar) {
   const kayit = anahtar && onbellekOku(anahtar);
   if (kayit) return kayit;
-  await isciKapat(); // bellek için
+  await isciKapat();
   $('durum').textContent = 'Dil algılanıyor (ilk seferde dil verileri iner, biraz sürebilir)...';
   const w = await Tesseract.createWorker('eng+kor+jpn+chi_sim', 1);
   let metin = '';
@@ -240,7 +525,7 @@ async function dilAlgila(liste, anahtar) {
   return null;
 }
 
-// ---------- OCR işçisi (tekrar kullanılır) ----------
+// ===================== OCR VE ÇEVİRİ =====================
 let isci = null, isciDil = null;
 async function ociGetir(dil) {
   if (isci && isciDil === dil) return isci;
@@ -254,51 +539,51 @@ async function isciKapat() {
   isci = null; isciDil = null;
 }
 
-// ---------- Ana akış ----------
-async function hepsiniIsle(liste, anahtar) {
-  calisiyor = true; iptal = false;
-  $('dur').hidden = false;
-  $('sayfalar').innerHTML = '';
+async function hepsiniIsle(liste, it) {
   try {
-    let k = $('kaynak').value;
+    let k = it.kaynak;
     if (k === 'auto') {
-      const t = await dilAlgila(liste, anahtar);
-      if (iptal) throw new Error('Durduruldu.');
-      k = t || 'eng';
-      $('durum').textContent = t ? `Algılanan dil: ${dilAdi(k)}` : 'Dil algılanamadı, İngilizce varsayıldı.';
+      if (it.algilanan) k = it.algilanan;
+      else {
+        const t = await dilAlgila(liste, it.tur === 'link' ? seriAnahtari(it.link) : null);
+        if (iptal) { $('durum').textContent = 'Durduruldu ⏹'; return; }
+        k = t || 'eng';
+        if (t) { it.algilanan = t; await kaydetItem(it); }
+        else $('durum').textContent = 'Dil algılanamadı, İngilizce varsayıldı.';
+      }
     }
-    const kM = mKodu(k), hM = $('hedef').value;
-    if (kM === hM) throw new Error('Kaynak ve hedef dil aynı. Dilleri kontrol et.');
+    const kM = mKodu(k), hM = it.hedef;
+    if (kM === hM) throw new Error(`Kaynak (${dilAdi(k)}) ve hedef dil aynı. 🌐 düğmesinden birini değiştir.`);
 
     await ociGetir(k);
     let sonraki = resimYukle(liste[0]).catch(() => null);
     for (let i = 0; i < liste.length && !iptal; i++) {
       const img = await sonraki;
       sonraki = i + 1 < liste.length ? resimYukle(liste[i + 1]).catch(() => null) : null;
-      if (!img || img.naturalWidth < 300 || img.naturalHeight < 300) { delete liste[i].img; continue; }
-      try {
-        const tuval = await sayfaIsle(img, k, kM, hM, `${dilAdi(k)} → ${dilAdi(DILLER.find(d => d[1] === hM)[0])} · sayfa ${i + 1}/${liste.length}`);
-        // Bellek tasarrufu: işlenen sayfayı hafif bir resme çevir
-        tuval.toBlob(b => {
-          if (!b) return;
-          const im = new Image();
-          im.src = URL.createObjectURL(b);
-          tuval.replaceWith(im);
-        }, 'image/jpeg', 0.88);
-      } catch (e) { console.warn('Sayfa atlandı:', e); }
+      if (iptal) break;
+      if (img && img.naturalWidth >= 300 && img.naturalHeight >= 300) {
+        try {
+          const etiket = `${dilAdi(k)} → ${hedefAdi(hM)} · sayfa ${i + 1}/${liste.length}`;
+          const tuval = await sayfaIsle(img, k, kM, hM, etiket);
+          // Bellek tasarrufu: işlenen sayfayı hafif bir resme çevir
+          tuval.toBlob(b => {
+            if (!b) return;
+            const im = new Image();
+            im.src = URL.createObjectURL(b);
+            tuval.replaceWith(im);
+          }, 'image/jpeg', 0.88);
+        } catch (e) { console.warn('Sayfa atlandı:', e); }
+      }
       delete liste[i].img;
+      if (!liste[i].proxy) URL.revokeObjectURL(liste[i].kaynak);
     }
-    $('durum').textContent = iptal ? 'Durduruldu ⏹' : `Bitti ✅ (${liste.length} resim tarandı)`;
-  } catch (e) {
-    $('durum').textContent = 'Hata: ' + e.message;
+    if (!$('okuyucu').hidden || iptal) $('durum').textContent = iptal ? 'Durduruldu ⏹' : `Bitti ✅ (${liste.length} sayfa)`;
   } finally {
     liste.forEach(o => delete o.img);
-    $('dur').hidden = true;
-    calisiyor = false;
   }
 }
 
-// Uzun webtoon şeritlerini, baloncukları ortadan kesmemek için sade (boş) satırlardan parçalara böler
+// Uzun webtoon şeritlerini baloncukları ortadan kesmeyecek şekilde boş satırlardan parçalara böler
 const MAX_GEN = 1400, PARCA = 1800;
 
 async function sayfaIsle(img, k, kM, hM, etiket) {
@@ -337,8 +622,7 @@ function kesimNoktalari(ctx, W, H) {
   const n = [0];
   let y = 0;
   while (H - y > PARCA * 1.25) {
-    const hedef = y + PARCA;
-    y = enSadeSatir(ctx, W, hedef - 350, hedef + 350);
+    y = enSadeSatir(ctx, W, y + PARCA - 350, y + PARCA + 350);
     n.push(y);
   }
   n.push(H);
@@ -376,13 +660,12 @@ function gecerli(p) {
 function temizle(t, k) {
   t = t.replace(/\s+/g, ' ').trim();
   if (k === 'jpn' || k === 'chi_sim' || k === 'chi_tra') {
-    // Tesseract Japonca/Çincede harflerin arasına boşluk koyar, kaldır
     t = t.replace(/(?<=[\u3040-\u9FFF])\s+(?=[\u3040-\u9FFF])/g, '');
   }
   return t;
 }
 
-// ---------- Çeviri (önbellekli, aynı anda en fazla 4 istek) ----------
+// Çeviri: önbellekli, aynı anda en fazla 4 istek
 const ceviriOnbellek = new Map();
 function cevir(metin, kM, hM) {
   const anahtar = kM + '|' + hM + '|' + metin;
@@ -395,7 +678,7 @@ function cevir(metin, kM, hM) {
       const s = j.responseData && j.responseData.translatedText;
       if (!s || /MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID/i.test(s)) return metin;
       const ta = document.createElement('textarea');
-      ta.innerHTML = s; // &#39; gibi kodları çöz
+      ta.innerHTML = s;
       return ta.value;
     } catch { return metin; }
   })();
@@ -412,7 +695,7 @@ async function havuz(isler, n, fn) {
   return sonuc;
 }
 
-// ---------- Balona yazma ----------
+// Balona yazma
 function zeminRengi(ctx, x, y, w, h) {
   x = Math.max(0, x | 0); y = Math.max(0, y | 0);
   w = Math.min(ctx.canvas.width - x, w | 0); h = Math.min(ctx.canvas.height - y, h | 0);
@@ -431,7 +714,6 @@ function balonaYaz(ctx, b, metin, hM) {
   const w = Math.min(ctx.canvas.width - x, b.x1 - b.x0 + pad * 2);
   const h = Math.min(ctx.canvas.height - y, b.y1 - b.y0 + pad * 2);
 
-  // Balonun kendi zemin rengini kullan (koyu balonlarda beyaz yazı)
   const [r, g, bl] = zeminRengi(ctx, x, y, w, h);
   ctx.fillStyle = `rgb(${r},${g},${bl})`;
   ctx.fillRect(x, y, w, h);
@@ -461,6 +743,9 @@ function sar(ctx, metin, genislik) {
   if (satir) satirlar.push(satir);
   return satirlar;
 }
+
+// ===================== BAŞLAT =====================
+kutuphaneyiYenile().catch(e => kdurum('Kitaplık açılamadı: ' + e.message));
 </script>
 </body>
 </html>
