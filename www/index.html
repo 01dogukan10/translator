@@ -735,6 +735,7 @@ async function hepsiniIsle(liste, it) {
     await ociGetir(k);
     const bloblar = [];
     let hatali = 0;
+    ceviriHata = 0;
     let sonraki = resimYukle(liste[0]).catch(() => null);
     for (let i = 0; i < liste.length && !iptal; i++) {
       const img = await sonraki;
@@ -759,7 +760,13 @@ async function hepsiniIsle(liste, it) {
       if (!liste[i].proxy) URL.revokeObjectURL(liste[i].kaynak);
     }
     if (iptal) { $('durum').textContent = 'Durduruldu ⏹'; return; }
-    if (hatali) { $('durum').textContent = `Bitti ⚠️ (${hatali} sayfa yüklenemedi, çeviri kaydedilmedi)`; return; }
+    if (hatali || ceviriHata) {
+      const parca = [];
+      if (hatali) parca.push(`${hatali} sayfa yüklenemedi`);
+      if (ceviriHata) parca.push(`${ceviriHata} balon çevrilemedi`);
+      $('durum').textContent = `Bitti ⚠️ ${parca.join(', ')} · kaydedilmedi. Biraz sonra 🌐 → baştan çevir ile tekrar dene.`;
+      return;
+    }
     if (bloblar.length) {
       $('durum').textContent = 'Çeviri .cbz olarak kaydediliyor...';
       const mesaj = await cbzKaydet(it, bloblar);
@@ -852,22 +859,48 @@ function temizle(t, k) {
   return t;
 }
 
-// Çeviri: önbellekli, aynı anda en fazla 4 istek
+// Çeviri: önce Google (anahtarsız uç nokta), olmazsa MyMemory. Başarısızlıklar sayılır ve önbelleğe alınmaz.
 const ceviriOnbellek = new Map();
+let ceviriHata = 0;
+
+async function jsonGetir(url) {
+  if (native) {
+    const r = await Http.get({ url, headers: { 'User-Agent': UA } });
+    return typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+  }
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+const htmlCoz = s => { const ta = document.createElement('textarea'); ta.innerHTML = s; return ta.value; };
+
+async function googleCevir(metin, kM, hM) {
+  const j = await jsonGetir('https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=' + kM +
+                            '&tl=' + hM + '&q=' + encodeURIComponent(metin.slice(0, 1500)));
+  const s = (j[0] || []).map(x => x[0]).join('');
+  if (!s) throw new Error('boş yanıt');
+  return s;
+}
+
+async function myMemoryCevir(metin, kM, hM) {
+  const j = await jsonGetir('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(metin.slice(0, 450)) +
+                            '&langpair=' + kM + '|' + hM);
+  const s = j.responseData && j.responseData.translatedText;
+  if (!s || /MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID|YOU USED ALL/i.test(s)) throw new Error('günlük limit ya da hata');
+  return htmlCoz(s);
+}
+
 function cevir(metin, kM, hM) {
   const anahtar = kM + '|' + hM + '|' + metin;
   if (ceviriOnbellek.has(anahtar)) return ceviriOnbellek.get(anahtar);
-  const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(metin.slice(0, 450)) +
-              '&langpair=' + kM + '|' + hM;
   const p = (async () => {
-    try {
-      const j = await (await fetch(url)).json();
-      const s = j.responseData && j.responseData.translatedText;
-      if (!s || /MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID/i.test(s)) return metin;
-      const ta = document.createElement('textarea');
-      ta.innerHTML = s;
-      return ta.value;
-    } catch { return metin; }
+    for (const servis of [googleCevir, myMemoryCevir]) {
+      try { const s = (await servis(metin, kM, hM)).trim(); if (s) return s; }
+      catch (e) { console.warn(servis.name + ' başarısız:', e.message); }
+    }
+    ceviriHata++;
+    ceviriOnbellek.delete(anahtar); // başarısız sonuç hatırlanmasın, tekrar denenebilsin
+    return metin;
   })();
   ceviriOnbellek.set(anahtar, p);
   return p;
