@@ -801,13 +801,11 @@ async function sayfaIsle(img, k, kM, hM, etiket) {
     alt.getContext('2d').drawImage(tuval, 0, y0, W, h, 0, 0, W, h);
 
     const { data } = await worker.recognize(alt);
-    const pr = (data.paragraphs || data.blocks.flatMap(b => b.paragraphs)).filter(gecerli);
-    if (!pr.length) continue;
+    const balonlar = balonlariCikar(data, k, y0);
+    if (!balonlar.length) continue;
 
-    const ceviriler = await havuz(pr, 4, p => cevir(temizle(p.text, k), kM, hM));
-    pr.forEach((p, i) => balonaYaz(ctx,
-      { x0: p.bbox.x0, y0: p.bbox.y0 + y0, x1: p.bbox.x1, y1: p.bbox.y1 + y0 },
-      ceviriler[i], hM));
+    const ceviriler = await havuz(balonlar, 4, b => cevir(temizle(b.text, k), kM, hM));
+    balonlar.forEach((b, i) => balonaYaz(ctx, b.bbox, ceviriler[i], hM));
   }
   return tuval;
 }
@@ -842,13 +840,62 @@ function enSadeSatir(ctx, W, a, b) {
   return enY;
 }
 
-// Gürültü, ses efektleri ve yanlış kutuları ele
-function gecerli(p) {
-  const t = p.text.trim();
-  if (t.length < 2 || p.confidence < 60) return false;
-  if (p.bbox.y1 - p.bbox.y0 < 14 || p.bbox.x1 - p.bbox.x0 < 20) return false;
-  const harf = (t.match(/[\p{L}\p{N}]/gu) || []).length;
-  return harf / t.length >= 0.5;
+// ---- OCR sonucunu balonlara ayırma: anlamsız (resim/efekt) satırları eler, yakın satırları tek balonda toplar ----
+const LATIN = new Set(['eng', 'fra', 'spa', 'deu', 'ita', 'por', 'tur', 'ind']);
+const SESLI = /[aeiouyáàâäãåéèêëíìîïóòôöõúùûüıİ]/i;
+
+function kelimeGecerli(w, k) {
+  const t = (w.text || '').trim();
+  if (!t || w.confidence < 60) return false;
+  const harf = (t.match(/\p{L}/gu) || []).length;
+  if (harf < 1 || harf / t.length < 0.6) return false;
+  if (!LATIN.has(k)) return true;
+  if (harf === 1) return /^[AaIiOo]$/.test(t.replace(/[^\p{L}]/gu, ''));
+  return SESLI.test(t); // sesli harfi olmayan "XN", "TKS" gibi çöpleri ele
+}
+
+function balonlariCikar(data, k, yOfs) {
+  const paragraflar = data.paragraphs || data.blocks.flatMap(b => b.paragraphs);
+  const satirlar = [];
+  for (const p of paragraflar) {
+    for (const l of (p.lines || [])) {
+      const bb = l.bbox, yuk = bb.y1 - bb.y0;
+      if (yuk < 10 || yuk > 160 || bb.x1 - bb.x0 < 12) continue;
+      const kelimeler = (l.words && l.words.length) ? l.words : [{ text: l.text, confidence: l.confidence }];
+      const iyi = kelimeler.filter(w => kelimeGecerli(w, k));
+      if (!iyi.length || iyi.length / kelimeler.length < 0.6) continue; // satırın çoğu çöpse tüm satırı at
+      satirlar.push({
+        bb, yuk,
+        text: iyi.map(w => w.text.trim()).join(' '),
+        guven: iyi.reduce((t, w) => t + w.confidence, 0) / iyi.length
+      });
+    }
+  }
+  satirlar.sort((a, b) => a.bb.y0 - b.bb.y0);
+
+  // Birbirine yakın ve yatayda örtüşen satırlar aynı balondur; yan yana balonlar ayrı kalır
+  const gruplar = [];
+  for (const s of satirlar) {
+    const g = gruplar.find(g => {
+      const bosluk = s.bb.y0 - g.y1;
+      const kesisim = Math.min(s.bb.x1, g.x1) - Math.max(s.bb.x0, g.x0);
+      return kesisim > 0 && bosluk <= Math.max(s.yuk, g.sonYuk) * 1.2;
+    });
+    if (g) {
+      g.satirlar.push(s);
+      g.x0 = Math.min(g.x0, s.bb.x0); g.x1 = Math.max(g.x1, s.bb.x1); g.y1 = Math.max(g.y1, s.bb.y1);
+      g.sonYuk = s.yuk;
+    } else {
+      gruplar.push({ satirlar: [s], x0: s.bb.x0, y0: s.bb.y0, x1: s.bb.x1, y1: s.bb.y1, sonYuk: s.yuk });
+    }
+  }
+  return gruplar
+    .map(g => ({
+      text: g.satirlar.map(s => s.text).join(' '),
+      guven: g.satirlar.reduce((t, s) => t + s.guven, 0) / g.satirlar.length,
+      bbox: { x0: g.x0, y0: g.y0 + yOfs, x1: g.x1, y1: g.y1 + yOfs }
+    }))
+    .filter(b => b.text.replace(/[^\p{L}\p{N}]/gu, '').length >= 2 && b.guven >= 62);
 }
 
 function temizle(t, k) {
@@ -928,6 +975,41 @@ function zeminRengi(ctx, x, y, w, h) {
   return [r / n | 0, g / n | 0, b / n | 0];
 }
 
+// Yazının etrafındaki balon içini (aynı zemin rengindeki bölge) bulur; çeviri uzun çıkarsa oraya sığdırılır
+function balonAlani(ctx, b, bg) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, GEN = 140; // balon en fazla 140px dışarı taşabilir
+  const ham = { x: b.x0, y: b.y0, w: b.x1 - b.x0, h: b.y1 - b.y0 };
+  const rx0 = Math.max(0, Math.floor(b.x0 - GEN)), ry0 = Math.max(0, Math.floor(b.y0 - GEN));
+  const rx1 = Math.min(W, Math.ceil(b.x1 + GEN)), ry1 = Math.min(H, Math.ceil(b.y1 + GEN));
+  const w = rx1 - rx0, h = ry1 - ry0;
+  if (w < 4 || h < 4) return ham;
+  const d = ctx.getImageData(rx0, ry0, w, h).data;
+  const yakin = i => Math.abs(d[i] - bg[0]) < 40 && Math.abs(d[i + 1] - bg[1]) < 40 && Math.abs(d[i + 2] - bg[2]) < 40;
+  const gor = new Uint8Array(w * h), yig = new Int32Array(w * h);
+  let sp = 0;
+  const ekle = (x, y) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    const i = y * w + x;
+    if (!gor[i] && yakin(i * 4)) { gor[i] = 1; yig[sp++] = i; }
+  };
+  const ox0 = Math.floor(b.x0 - rx0), oy0 = Math.floor(b.y0 - ry0), ox1 = Math.ceil(b.x1 - rx0), oy1 = Math.ceil(b.y1 - ry0);
+  for (let x = ox0; x <= ox1; x++) { ekle(x, oy0); ekle(x, oy1); }
+  for (let y = oy0; y <= oy1; y++) { ekle(ox0, y); ekle(ox1, y); }
+  if (!sp) return ham;
+  let mx0 = w, my0 = h, mx1 = 0, my1 = 0;
+  while (sp) {
+    const i = yig[--sp], x = i % w, y = (i / w) | 0;
+    if (x < mx0) mx0 = x; if (x > mx1) mx1 = x;
+    if (y < my0) my0 = y; if (y > my1) my1 = y;
+    ekle(x + 1, y); ekle(x - 1, y); ekle(x, y + 1); ekle(x, y - 1);
+  }
+  // Yuvarlak balonların köşeleri boştur: bölgeyi %12 küçültüp yazı alanının altına inme
+  const gx = (mx1 - mx0) * 0.12, gy = (my1 - my0) * 0.12;
+  const X0 = Math.min(b.x0, rx0 + mx0 + gx), Y0 = Math.min(b.y0, ry0 + my0 + gy);
+  const X1 = Math.max(b.x1, rx0 + mx1 - gx), Y1 = Math.max(b.y1, ry0 + my1 - gy);
+  return { x: X0, y: Y0, w: X1 - X0, h: Y1 - Y0 };
+}
+
 function balonaYaz(ctx, b, metin, hM) {
   const pad = 5;
   const x = Math.max(0, b.x0 - pad), y = Math.max(0, b.y0 - pad);
@@ -935,21 +1017,24 @@ function balonaYaz(ctx, b, metin, hM) {
   const h = Math.min(ctx.canvas.height - y, b.y1 - b.y0 + pad * 2);
 
   const [r, g, bl] = zeminRengi(ctx, x, y, w, h);
+  const alan = balonAlani(ctx, { x0: x, y0: y, x1: x + w, y1: y + h }, [r, g, bl]); // doldurmadan önce oku
   ctx.fillStyle = `rgb(${r},${g},${bl})`;
-  ctx.fillRect(x, y, w, h);
+  ctx.fillRect(x, y, w, h); // sadece eski yazının olduğu yeri sil
   ctx.fillStyle = (0.299 * r + 0.587 * g + 0.114 * bl) > 140 ? '#000' : '#fff';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.direction = hM === 'ar' ? 'rtl' : 'ltr';
 
-  let satirlar = [], boyut = Math.min(44, Math.floor(h / 1.15));
-  for (; boyut >= 9; boyut--) {
+  const aw = alan.w - 12, ah = alan.h - 6;
+  let satirlar = [], boyut = Math.min(44, Math.floor(ah / 1.15));
+  for (; boyut >= 10; boyut--) {
     ctx.font = `bold ${boyut}px "Comic Sans MS", "Segoe UI", Arial, sans-serif`;
-    satirlar = sar(ctx, metin, w - 6);
-    if (satirlar.length * boyut * 1.15 <= h) break;
+    satirlar = sar(ctx, metin, aw);
+    if (satirlar.length * boyut * 1.15 <= ah) break;
   }
-  let yy = y + Math.max(0, (h - satirlar.length * boyut * 1.15) / 2);
-  satirlar.forEach(s => { ctx.fillText(s, x + w / 2, yy); yy += boyut * 1.15; });
+  boyut = Math.max(boyut, 10);
+  let yy = alan.y + Math.max(0, (alan.h - satirlar.length * boyut * 1.15) / 2);
+  satirlar.forEach(s => { ctx.fillText(s, alan.x + alan.w / 2, yy); yy += boyut * 1.15; });
 }
 
 function sar(ctx, metin, genislik) {
