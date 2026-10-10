@@ -39,10 +39,14 @@
   #durum{font-size:12px;color:#aaa;margin-top:4px;min-height:15px}
   #sayfalar{max-width:900px;margin:0 auto}
   #sayfalar canvas,#sayfalar img{width:100%;display:block;margin-bottom:2px}
+  .bolum[data-kapali]{overflow:hidden}
+  .bolumBaslik{padding:16px 10px;text-align:center;color:#9ca3af;font-size:13px;background:#161616}
+  .bolumYeniden{padding:30px 10px;text-align:center;color:#6b7280;font-size:13px;cursor:pointer}
+  .uyari{padding:10px;text-align:center;color:#fbbf24;font-size:13px;background:#1d1d1d}
 
   /* Pencere */
   #sheet{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:20;display:flex;align-items:flex-end;justify-content:center}
-  #sheet .kutu{background:#1d1d1d;width:100%;max-width:560px;border-radius:18px 18px 0 0;padding:18px;padding-bottom:max(18px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px}
+  #sheet .kutu{background:#1d1d1d;width:100%;max-width:560px;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:18px;padding-bottom:max(18px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px}
   #sheet h3{margin:0}
   #sBilgi{font-size:13px;color:#9ca3af}
   #sButonlar{display:flex;flex-direction:column;gap:8px;margin-top:4px}
@@ -54,7 +58,7 @@
 <section id="kutuphane">
   <h1>📚 Çizgi Çevirici</h1>
   <div class="ekle">
-    <input id="girdi" type="text" inputmode="url" autocomplete="off" placeholder="Bölüm veya resim linkini yapıştır (https://...)">
+    <input id="girdi" type="text" inputmode="url" autocomplete="off" placeholder="Seri, bölüm veya resim linkini yapıştır (https://...)">
     <div class="satir">
       <button id="devam" class="mavi">Devam →</button>
       <label class="btn gri">📂 Dosyadan ekle<input id="dosya" type="file" accept="image/*" multiple></label>
@@ -73,6 +77,7 @@
       <button id="geri">←</button>
       <div id="baslik"></div>
       <button id="dur" class="kirmizi" hidden>⏹</button>
+      <button id="bolumBtn" title="Bölüm seç" hidden>📑</button>
       <button id="cbzBtn" title=".cbz olarak kaydet">📦</button>
       <button id="ayarAc">🌐</button>
     </div>
@@ -81,13 +86,17 @@
   <div id="sayfalar"></div>
 </section>
 
-<!-- ===== KAYIT / DÜZENLEME / DİL AYARI PENCERESİ ===== -->
+<!-- ===== KAYIT / DÜZENLEME / DİL / BÖLÜM PENCERESİ ===== -->
 <div id="sheet" hidden>
   <div class="kutu">
     <h3 id="sBaslik"></h3>
     <input id="sAd" type="text" placeholder="Başlık">
     <div id="sBilgi"></div>
-    <div class="satir">
+    <div id="sBolumKap" class="satir" hidden>
+      <select id="sBolum"></select>
+      <button id="sTers" class="gri" title="Bölüm sırasını ters çevir">⇅</button>
+    </div>
+    <div id="sDiller" class="satir">
       <select id="sKaynak"></select>
       <button id="sDegis" class="gri" title="Dilleri değiştir">⇄</button>
       <select id="sHedef"></select>
@@ -118,19 +127,23 @@ const depo = (k, v) => { try { if (v === undefined) return localStorage.getItem(
 const onbellekOku = k => { try { return JSON.parse(depo('dilOnbellek') || '{}')[k]; } catch { return undefined; } };
 const onbellekYaz = (k, v) => { try { const o = JSON.parse(depo('dilOnbellek') || '{}'); o[k] = v; depo('dilOnbellek', JSON.stringify(o)); } catch {} };
 
-// ---------- Kitaplık veritabanı (IndexedDB: linkler ve dosyalar burada saklanır) ----------
+// ---------- Veritabanı (IndexedDB): 'kitaplik' = kayıtlar, 'cbz' = çevrilmiş bölümler ----------
 let _db = null;
 const veritabani = () => _db || (_db = new Promise((ok, hata) => {
-  const r = indexedDB.open('cizgi-cevirici', 1);
-  r.onupgradeneeded = () => r.result.createObjectStore('kitaplik', { keyPath: 'id' });
+  const r = indexedDB.open('cizgi-cevirici', 2);
+  r.onupgradeneeded = () => {
+    const db = r.result;
+    if (!db.objectStoreNames.contains('kitaplik')) db.createObjectStore('kitaplik', { keyPath: 'id' });
+    if (!db.objectStoreNames.contains('cbz')) db.createObjectStore('cbz');
+  };
   r.onsuccess = () => ok(r.result);
   r.onerror = () => hata(r.error);
 }));
-async function idb(mod, fn) {
+async function idb(mod, fn, magaza = 'kitaplik') {
   const db = await veritabani();
   return new Promise((ok, hata) => {
-    const tx = db.transaction('kitaplik', mod);
-    const r = fn(tx.objectStore('kitaplik'));
+    const tx = db.transaction(magaza, mod);
+    const r = fn(tx.objectStore(magaza));
     tx.oncomplete = () => ok(r && r.result);
     tx.onerror = tx.onabort = () => hata(tx.error || new Error('Veritabanı hatası'));
   });
@@ -139,6 +152,9 @@ const hepsiniGetir = () => idb('readonly', s => s.getAll());
 const getirId = id => idb('readonly', s => s.get(id));
 const kaydetItem = it => idb('readwrite', s => s.put(it));
 const silItem = id => idb('readwrite', s => s.delete(id));
+const cbzYaz = (anahtar, blob) => idb('readwrite', s => s.put(blob, anahtar), 'cbz');
+const cbzOku = anahtar => idb('readonly', s => s.get(anahtar), 'cbz');
+const cbzSilTumu = id => idb('readwrite', s => s.delete(IDBKeyRange.bound(id + ':', id + ':\uffff')), 'cbz');
 const yeniId = () => 'k' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
 // ---------- Ağ: uygulamada doğrudan, tarayıcıda proxy ile ----------
@@ -188,12 +204,78 @@ async function resimYukle(oge, tut = false) {
   return img;
 }
 
-// Linkteki başlığı ve sayfa resimlerini bulur
+// ---------- Bölüm listesi çıkarma ----------
+const BOLUM_RE = /(chapter|chap\b|\bch[\s._-]?\d|episode|\bep[\s._-]?\d|bölüm|bolum|\bbl[\s._-]?\d|issue|cap[ií]tulo|话|話|화|章)/i;
+const BOLUM_NO = /(?:chapter|chap|ch|episode|ep|bölüm|bolum|bl|issue|capitulo|capítulo)[\s._#-]*(\d+(?:\.\d+)?)/i;
+const BOLUM_NO2 = /(\d+(?:\.\d+)?)\s*(?:话|話|화|章)/;
+
+function bolumNo(ad, link) {
+  let yol = link;
+  try { yol = decodeURIComponent(link); } catch {}
+  let m = BOLUM_NO.exec(ad) || BOLUM_NO2.exec(ad) || BOLUM_NO.exec(yol) || BOLUM_NO2.exec(yol);
+  if (m) return parseFloat(m[1]);
+  m = /(\d+(?:\.\d+)?)(?!.*\d)/.exec(yol.split('?')[0]);
+  return m ? parseFloat(m[1]) : null;
+}
+
+function bolumleriBul(doc, baz, sayfaLink) {
+  let anaHost, sayfaYol = [];
+  try { anaHost = new URL(baz).hostname; sayfaYol = new URL(sayfaLink).pathname.split('/').filter(Boolean); } catch { return []; }
+  const gorulen = new Set(), adaylar = [];
+  const ekle = (href, ad) => {
+    let u;
+    try { u = new URL(href.trim(), baz); } catch { return; }
+    if (!/^https?:$/.test(u.protocol) || u.hostname !== anaHost) return;
+    u.hash = '';
+    if (gorulen.has(u.href)) return;
+    gorulen.add(u.href);
+    ad = (ad || '').replace(/\s+/g, ' ').trim().slice(0, 70);
+    const yol = u.pathname.split('/').filter(Boolean);
+    if (!ad) { try { ad = decodeURIComponent(yol[yol.length - 1] || u.href); } catch { ad = yol[yol.length - 1] || u.href; } }
+    let ortak = 0;
+    while (ortak < yol.length && ortak < sayfaYol.length && yol[ortak] === sayfaYol[ortak]) ortak++;
+    adaylar.push({ ad, link: u.href, ortak });
+  };
+
+  // 1) Okuyucu sayfalarındaki bölüm seçme kutusu
+  doc.querySelectorAll('select option').forEach(o => {
+    const v = o.getAttribute('value') || '';
+    if (v && /[\/.]/.test(v) && BOLUM_RE.test(v + ' ' + o.textContent)) ekle(v, o.textContent);
+  });
+  // 2) Bölüm bağlantıları
+  doc.querySelectorAll('a[href]').forEach(a => {
+    const h = a.getAttribute('href') || '';
+    if (!h || h[0] === '#' || /^(javascript|mailto|tel):/i.test(h)) return;
+    const ad = a.textContent || a.getAttribute('title') || '';
+    if (BOLUM_RE.test(h) || BOLUM_RE.test(ad)) ekle(h, ad);
+  });
+
+  // Kenar çubuğundaki başka serilerin bölümlerini ele: sayfanın kendi yolunu paylaşanları tercih et
+  let liste = adaylar;
+  const enCok = Math.max(0, ...adaylar.map(a => a.ortak));
+  if (enCok >= 1) {
+    const eslesen = adaylar.filter(a => a.ortak === enCok);
+    if (eslesen.length >= 3) liste = eslesen;
+  }
+  liste = liste.map(({ ad, link }) => ({ ad, link }));
+
+  // Çoğunda bölüm numarası varsa numaraya göre artan sırala, aynı numarayı bir kez al
+  const no = liste.map(b => bolumNo(b.ad, b.link));
+  if (liste.length && no.filter(n => n !== null).length / liste.length >= 0.8) {
+    const sirali = liste.map((b, i) => ({ b, n: no[i] === null ? Infinity : no[i], i }))
+      .sort((x, y) => x.n - y.n || x.i - y.i);
+    const gor = new Set();
+    liste = sirali.filter(x => { if (x.n === Infinity) return true; if (gor.has(x.n)) return false; gor.add(x.n); return true; }).map(x => x.b);
+  }
+  return liste.slice(0, 1500);
+}
+
+// Linkteki başlığı, sayfa resimlerini ve (varsa) bölüm listesini bulur
 async function sayfaBilgisi(link) {
   if (/\.(jpe?g|png|webp|gif)(\?|$)/i.test(link)) {
     let ad = 'Resim';
     try { ad = decodeURIComponent(new URL(link).pathname.split('/').pop()) || ad; } catch {}
-    return { baslik: ad, resimler: [link] };
+    return { baslik: ad, resimler: [link], bolumler: [] };
   }
   const doc = new DOMParser().parseFromString(await sayfaHtml(link), 'text/html');
   const og = doc.querySelector('meta[property="og:title"]');
@@ -213,11 +295,18 @@ async function sayfaBilgisi(link) {
     gorulen.add(tam);
     resimler.push(tam);
   });
-  return { baslik: baslik.slice(0, 100), resimler };
+  return { baslik: baslik.slice(0, 100), resimler, bolumler: bolumleriBul(doc, baz, link) };
 }
 
 // ===================== ARAYÜZ: KİTAPLIK =====================
 const kdurum = m => { $('kdurum').textContent = m || ''; };
+
+const bolumListesi = it => it.tur === 'dosya'
+  ? [{ ad: it.baslik, anahtar: 'dosya' }]
+  : (it.bolumler && it.bolumler.length ? it.bolumler : [{ ad: it.baslik, link: it.link }]);
+const bolumAnahtari = bl => bl.link || bl.anahtar || 'tek';
+const cbzAnahtar = (it, bl) => it.id + ':' + bolumAnahtari(bl);
+const kayitliMi = (it, bl) => it.cbzDil === it.kaynak + '|' + it.hedef && (it.kayitli || []).includes(bolumAnahtari(bl));
 
 function kartYap(it) {
   const kart = document.createElement('div');
@@ -233,7 +322,10 @@ function kartYap(it) {
   let kaynakYer = 'Dosya';
   if (it.tur === 'link') { try { kaynakYer = new URL(it.link).hostname; } catch { kaynakYer = 'Link'; } }
   const kd = it.kaynak === 'auto' ? (it.algilanan ? dilAdi(it.algilanan) : 'Otomatik') : dilAdi(it.kaynak);
-  a.textContent = `${kaynakYer} · ${it.sayfaSayisi || '?'} sayfa · ${kd} → ${hedefAdi(it.hedef)}` + (it.cbz ? ' · 📦 kayıtlı' : '');
+  const nBolum = it.bolumler ? it.bolumler.length : 1;
+  const yer = nBolum > 1 ? `Bölüm ${(it.sira || 0) + 1}/${nBolum}` : `${it.sayfaSayisi || '?'} sayfa`;
+  a.textContent = `${kaynakYer} · ${yer} · ${kd} → ${hedefAdi(it.hedef)}` +
+                  ((it.kayitli || []).length ? ` · 📦 ${it.kayitli.length}` : '');
   ic.append(b, a);
   ic.onclick = () => ac(it.id);
 
@@ -245,6 +337,7 @@ function kartYap(it) {
   sil.onclick = async () => {
     if (!confirm(`"${it.baslik}" kitaplıktan silinsin mi?`)) return;
     await silItem(it.id);
+    await cbzSilTumu(it.id).catch(() => {});
     kutuphaneyiYenile();
   };
   kart.append(ic, duz, sil);
@@ -266,15 +359,26 @@ $('devam').onclick = async () => {
     if (mevcut) { kdurum('Bu link zaten kitaplıkta, açılıyor...'); ac(mevcut.id); return; }
   } catch {}
   $('devam').disabled = true;
-  kdurum('Link kontrol ediliyor...');
+  kdurum('Link kontrol ediliyor, bölümler aranıyor...');
   try {
     const b = await sayfaBilgisi(link);
-    if (!b.resimler.length) throw new Error('Bu linkte sayfa (resim) bulunamadı.');
+    const liste = b.bolumler;
+    // Çok resim varsa bu bir bölüm sayfasıdır; az resim + bölüm listesi varsa seri sayfasıdır
+    const bolumSayfasi = b.resimler.length >= 5 || liste.length < 2;
+    const veri = { tur: 'link', link, baslik: b.baslik, kaynak: depo('kaynak') || 'auto', hedef: depo('hedef') || 'tr' };
+    if (!bolumSayfasi) {
+      Object.assign(veri, { bolumler: liste, seriSayfasi: true, sayfaSayisi: 0, sira: 0 });
+    } else {
+      if (!b.resimler.length) throw new Error('Bu linkte sayfa ya da bölüm listesi bulunamadı (site listeyi sonradan JavaScript ile yüklüyor olabilir).');
+      Object.assign(veri, { resimler: b.resimler, sayfaSayisi: b.resimler.length });
+      if (liste.length >= 2) {
+        const norm = u => u.replace(/#.*$/, '').replace(/\/$/, '');
+        const i = liste.findIndex(x => norm(x.link) === norm(link));
+        if (i >= 0) Object.assign(veri, { bolumler: liste, sira: i });
+      }
+    }
     kdurum('');
-    sheetAc('yeni', {
-      tur: 'link', link, baslik: b.baslik, resimler: b.resimler, sayfaSayisi: b.resimler.length,
-      kaynak: depo('kaynak') || 'auto', hedef: depo('hedef') || 'tr'
-    });
+    sheetAc('yeni', veri);
   } catch (e) { kdurum('Hata: ' + e.message); }
   finally { $('devam').disabled = false; }
 };
@@ -294,7 +398,7 @@ $('dosya').onchange = e => {
   });
 };
 
-// ===================== PENCERE (kaydet / düzenle / dil ayarı) =====================
+// ===================== PENCERE (kaydet / düzenle / dil ayarı / bölüm seç) =====================
 let sheet = null;
 
 function dilKutulariniDoldur() {
@@ -303,12 +407,38 @@ function dilKutulariniDoldur() {
   $('sHedef').innerHTML = DILLER.map(d => `<option value="${d[1]}">${d[2]}</option>`).join('');
 }
 
+function bolumKutusunuDoldur(liste, secili) {
+  const sel = $('sBolum');
+  sel.textContent = '';
+  liste.forEach((b, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = b.ad;
+    sel.appendChild(o);
+  });
+  sel.value = String(Math.max(0, Math.min(secili || 0, liste.length - 1)));
+}
+
 function sheetAc(mod, veri) {
   sheet = { mod, veri };
-  $('sBaslik').textContent = { yeni: 'Kitaplığa ekle', duzenle: 'Düzenle', ayar: 'Dil ayarları' }[mod];
-  $('sAd').hidden = mod === 'ayar';
+  $('sBaslik').textContent = { yeni: 'Kitaplığa ekle', duzenle: 'Düzenle', ayar: 'Dil ayarları', bolum: 'Bölüm seç' }[mod];
+  $('sAd').hidden = mod === 'ayar' || mod === 'bolum';
   $('sAd').value = veri.baslik || '';
-  $('sBilgi').textContent = mod === 'yeni' ? `${veri.sayfaSayisi} sayfa bulundu.` : '';
+  $('sDiller').hidden = mod === 'bolum';
+  const liste = mod === 'bolum' ? bolumListesi(veri) : veri.bolumler;
+  const listeVar = (mod === 'yeni' || mod === 'bolum') && liste && liste.length >= 2;
+  $('sBolumKap').hidden = !listeVar;
+  $('sTers').hidden = mod !== 'yeni';
+  if (listeVar) bolumKutusunuDoldur(liste, mod === 'bolum' ? okunanIndeks(veri) : (veri.sira || 0));
+
+  let bilgi = '';
+  if (mod === 'yeni') {
+    if (veri.seriSayfasi) bilgi = `${liste.length} bölüm bulundu. Hangi bölümden başlansın? (Sıra ters görünüyorsa ⇅ ile çevir.)`;
+    else if (listeVar) bilgi = `${veri.sayfaSayisi} sayfa ve ${liste.length} bölümlük liste bulundu. Hangi bölümden başlansın?`;
+    else bilgi = `${veri.sayfaSayisi} sayfa bulundu.`;
+  } else if (mod === 'bolum') bilgi = `${liste.length} bölüm var. Hangi bölümden okunsun?`;
+  $('sBilgi').textContent = bilgi;
+
   dilKutulariniDoldur();
   $('sKaynak').value = veri.kaynak || 'auto';
   $('sHedef').value = veri.hedef || 'tr';
@@ -317,8 +447,9 @@ function sheetAc(mod, veri) {
     yeni: [['Kaydet ve oku', 'oku', 'mavi'], ['Sadece kaydet', 'kaydet', 'gri'], ['İptal', 'iptal', 'gri']],
     duzenle: [['Kaydet', 'kaydet', 'mavi'], ['İptal', 'iptal', 'gri']],
     ayar: [['Uygula ve yeniden çevir', 'kaydet', 'mavi'],
-           ...(veri.cbz ? [['Kayıtlı çeviriyi sil, baştan çevir', 'sifirla', 'gri']] : []),
-           ['İptal', 'iptal', 'gri']]
+           ...((veri.kayitli || []).length ? [['Kayıtlı çevirileri sil, baştan çevir', 'sifirla', 'gri']] : []),
+           ['İptal', 'iptal', 'gri']],
+    bolum: [['Bu bölümden oku', 'kaydet', 'mavi'], ['İptal', 'iptal', 'gri']]
   }[mod];
   $('sButonlar').textContent = '';
   dugmeler.forEach(([ad, eylem, sinif]) => {
@@ -340,22 +471,43 @@ $('sDegis').onclick = () => {
   if (yeniKaynak) $('sKaynak').value = yeniKaynak;
 };
 
+$('sTers').onclick = () => {
+  if (!sheet || sheet.mod !== 'yeni' || !sheet.veri.bolumler) return;
+  const v = sheet.veri;
+  const secili = v.bolumler[Number($('sBolum').value)];
+  v.bolumler = v.bolumler.slice().reverse();
+  v.ters = !v.ters;
+  bolumKutusunuDoldur(v.bolumler, v.bolumler.indexOf(secili));
+};
+
+async function kayitlariSil(it) {
+  it.kayitli = [];
+  it.cbzDil = undefined;
+  await cbzSilTumu(it.id).catch(() => {});
+}
+
 async function sheetEylem(eylem) {
   if (eylem === 'iptal' || !sheet) return sheetKapat();
   const { mod, veri } = sheet;
   const ad = ($('sAd').value.trim() || veri.baslik || 'Adsız').slice(0, 100);
   const kaynak = $('sKaynak').value, hedef = $('sHedef').value;
-  depo('kaynak', kaynak); depo('hedef', hedef);
+  const bolumNoSecili = Number($('sBolum').value) || 0;
+  if (mod !== 'bolum') { depo('kaynak', kaynak); depo('hedef', hedef); }
   sheetKapat();
 
   try {
     if (mod === 'yeni') {
       const it = {
         id: yeniId(), tur: veri.tur, baslik: ad, kaynak, hedef,
-        sayfaSayisi: veri.sayfaSayisi, eklenme: Date.now(), sonOkunma: null
+        sayfaSayisi: veri.sayfaSayisi, eklenme: Date.now(), sonOkunma: null, kayitli: []
       };
-      if (veri.tur === 'link') { it.link = veri.link; it.resimler = veri.resimler; }
-      else it.dosyalar = veri.dosyalar;
+      if (veri.tur === 'link') {
+        it.link = veri.link; it.resimler = veri.resimler;
+        if (veri.bolumler && veri.bolumler.length >= 2) {
+          it.bolumler = veri.bolumler; it.sira = bolumNoSecili;
+          it.seriSayfasi = !!veri.seriSayfasi; it.ters = !!veri.ters;
+        }
+      } else it.dosyalar = veri.dosyalar;
       await kaydetItem(it);
       $('girdi').value = '';
       await kutuphaneyiYenile();
@@ -364,24 +516,28 @@ async function sheetEylem(eylem) {
       const it = await getirId(veri.id);
       if (!it) return;
       if (it.kaynak !== kaynak) it.algilanan = undefined;
-      if (it.kaynak !== kaynak || it.hedef !== hedef) it.cbz = null;
+      if (it.kaynak !== kaynak || it.hedef !== hedef) await kayitlariSil(it);
       Object.assign(it, { baslik: ad, kaynak, hedef });
       await kaydetItem(it);
       kutuphaneyiYenile();
-    } else { // ayar (okuyucu içinden)
+    } else if (mod === 'ayar') {
       if (acik.kaynak !== kaynak) acik.algilanan = undefined;
-      if (eylem === 'sifirla' || acik.kaynak !== kaynak || acik.hedef !== hedef) acik.cbz = null;
+      if (eylem === 'sifirla' || acik.kaynak !== kaynak || acik.hedef !== hedef) await kayitlariSil(acik);
       Object.assign(acik, { kaynak, hedef });
       await kaydetItem(acik);
-      $('baslik').textContent = acik.baslik;
+      yenidenBaslat();
+    } else { // bolum: seçilen bölümden devam
+      acik.sira = bolumNoSecili;
+      await kaydetItem(acik);
       yenidenBaslat();
     }
   } catch (e) { kdurum('Kaydedilemedi: ' + e.message); }
 }
 
-// ===================== ARAYÜZ: OKUYUCU =====================
-let acik = null;          // şu an okunan kitaplık öğesi
+// ===================== ARAYÜZ: OKUYUCU (kesintisiz okuma) =====================
+let acik = null;                    // şu an okunan kitaplık öğesi
 let calisiyor = false, iptal = false;
+const ONCE = 2;                     // okunan bölümden en fazla kaç bölüm önceden çevrilsin
 
 function ekranGoster(ad) {
   $('kutuphane').hidden = ad !== 'kutuphane';
@@ -411,6 +567,8 @@ async function yenidenBaslat() {
 
 async function geriDon() {
   iptal = true;
+  const it = acik;
+  if (it) { it.sira = okunanIndeks(it); kaydetItem(it).catch(() => {}); } // kaldığın bölümü kaydet
   acik = null;
   ekranGoster('kutuphane');
   while (calisiyor) await bekle(100);
@@ -422,44 +580,204 @@ $('geri').onclick = () => history.back();
 window.addEventListener('popstate', () => { if (!$('okuyucu').hidden) geriDon(); });
 $('dur').onclick = () => { iptal = true; $('durum').textContent = 'Durduruluyor...'; };
 $('ayarAc').onclick = () => acik && sheetAc('ayar', acik);
-$('sayfalar').onclick = () => $('ust').classList.toggle('gizli'); // sayfaya dokununca üst çubuk gizlenir/görünür
+$('bolumBtn').onclick = () => acik && sheetAc('bolum', acik);
+
+$('sayfalar').addEventListener('click', async e => {
+  const kap = e.target.closest && e.target.closest('.bolum[data-kapali]');
+  if (kap) { await kapagiAc(kap); return; }
+  $('ust').classList.toggle('gizli'); // sayfaya dokununca üst çubuk gizlenir/görünür
+});
+
+// Ekranın ortasındaki bölümün sırası
+function okunanIndeks(it) {
+  const orta = window.innerHeight / 2;
+  let sonuc = null;
+  for (const kap of $('sayfalar').querySelectorAll('.bolum')) {
+    const r = kap.getBoundingClientRect();
+    if (sonuc === null || r.top <= orta) sonuc = Number(kap.dataset.b); else break;
+  }
+  return sonuc === null ? (it.sira || 0) : sonuc;
+}
+
+let kaydirZamanlayici = null;
+window.addEventListener('scroll', () => {
+  if ($('okuyucu').hidden || kaydirZamanlayici) return;
+  kaydirZamanlayici = setTimeout(() => { kaydirZamanlayici = null; ilerlemeyiGuncelle(); }, 500);
+}, { passive: true });
+
+function ilerlemeyiGuncelle() {
+  if (!acik) return;
+  const i = okunanIndeks(acik);
+  if (i !== acik.sira) { acik.sira = i; kaydetItem(acik).catch(() => {}); }
+  eskileriKapla(i);
+}
+
+// Bellek için: okunan bölümün iki ve daha fazla gerisindeki (kayıtlı) bölümlerin resimlerini boşalt, yüksekliği koru
+function eskileriKapla(i) {
+  if (!acik) return;
+  const liste = bolumListesi(acik);
+  for (const kap of $('sayfalar').querySelectorAll('.bolum')) {
+    const b = Number(kap.dataset.b);
+    if (b >= i - 1 || kap.dataset.kapali || !kap.dataset.hazir) continue;
+    if (!kayitliMi(acik, liste[b])) continue; // kayıtlı değilse geri yükleyemeyiz, açık kalsın
+    const yuk = kap.offsetHeight;
+    kap.querySelectorAll('.sayfa').forEach(im => { if (im.dataset.u) URL.revokeObjectURL(im.dataset.u); im.remove(); });
+    kap.style.height = yuk + 'px';
+    kap.dataset.kapali = '1';
+    const y = document.createElement('div');
+    y.className = 'bolumYeniden';
+    y.textContent = '↻ Yeniden yüklemek için dokun';
+    kap.appendChild(y);
+  }
+}
+
+async function kapagiAc(kap) {
+  if (!acik) return;
+  const bl = bolumListesi(acik)[Number(kap.dataset.b)];
+  kap.querySelectorAll('.bolumYeniden').forEach(n => n.remove());
+  kap.style.height = '';
+  delete kap.dataset.kapali;
+  try { await cbzGoster(acik, bl, kap); }
+  catch (e) { $('durum').textContent = 'Bölüm açılamadı: ' + e.message; }
+}
+
+async function listeyiYenile(it) {
+  try {
+    $('durum').textContent = 'Bölüm listesi güncelleniyor...';
+    const b = await sayfaBilgisi(it.link);
+    if (b.bolumler.length < 2) return;
+    const yeni = it.ters ? b.bolumler.slice().reverse() : b.bolumler;
+    const suanki = ((it.bolumler || [])[it.sira || 0] || {}).link;
+    const i = yeni.findIndex(x => x.link === suanki);
+    it.bolumler = yeni;
+    it.sira = i >= 0 ? i : Math.min(it.sira || 0, yeni.length - 1);
+    await kaydetItem(it);
+  } catch (e) { console.warn('Liste güncellenemedi:', e); }
+}
+
+async function bolumResimleri(it, bl) {
+  if (it.tur === 'dosya') return it.dosyalar.map(f => ({ kaynak: URL.createObjectURL(f), proxy: false }));
+  let resimler = [];
+  try { resimler = (await sayfaBilgisi(bl.link)).resimler; }
+  catch (e) { if (!(it.resimler || []).length || bl.link !== it.link) throw e; }
+  if (!resimler.length && bl.link === it.link) resimler = it.resimler || [];
+  return resimler.map(u => ({ kaynak: u, proxy: true, ref: bl.link }));
+}
+
+async function dilBelirle(it, liste) {
+  if (it.kaynak !== 'auto') return it.kaynak;
+  if (it.algilanan) return it.algilanan;
+  const t = await dilAlgila(liste, it.tur === 'link' ? seriAnahtari(it.link) : null);
+  if (t) { it.algilanan = t; await kaydetItem(it); }
+  else if (!iptal) $('durum').textContent = 'Dil algılanamadı, İngilizce varsayıldı.';
+  return t || 'eng';
+}
 
 async function oku(it) {
   calisiyor = true; iptal = false;
   $('dur').hidden = false;
   try {
-    if (it.cbz && it.cbzKaynak === it.kaynak && it.cbzHedef === it.hedef) {
-      try {
-        it.sonOkunma = Date.now();
-        await kaydetItem(it);
-        await cbzGoster(it);
-        return;
-      } catch (e) {
-        console.warn('Kayıtlı çeviri açılamadı, yeniden çevriliyor:', e);
-        $('sayfalar').innerHTML = '';
-      }
-    }
-    let liste;
-    if (it.tur === 'dosya') {
-      liste = it.dosyalar.map(b => ({ kaynak: URL.createObjectURL(b), proxy: false }));
-    } else {
-      $('durum').textContent = 'Sayfalar getiriliyor...';
-      let resimler = [];
-      try { resimler = (await sayfaBilgisi(it.link)).resimler; } catch (e) { if (!(it.resimler || []).length) throw e; }
-      if (!resimler.length) resimler = it.resimler || [];
-      if (!resimler.length) throw new Error('Sayfalar bulunamadı.');
-      it.resimler = resimler; it.sayfaSayisi = resimler.length;
-      liste = resimler.map(u => ({ kaynak: u, proxy: true, ref: it.link }));
-    }
+    if (it.seriSayfasi) await listeyiYenile(it);
+    const bolumler = bolumListesi(it);
+    $('bolumBtn').hidden = bolumler.length < 2;
+    let b = Math.min(Math.max(it.sira || 0, 0), bolumler.length - 1);
     it.sonOkunma = Date.now();
     await kaydetItem(it);
-    await hepsiniIsle(liste, it);
+    let sonGosterilen = b - 1;
+    while (b < bolumler.length && !iptal) {
+      // Okuyucu yetişsin diye sadece birkaç bölüm önceden çevir
+      while (!iptal && sonGosterilen - okunanIndeks(it) >= ONCE) {
+        $('durum').textContent = 'Sonraki bölümler hazır ✅ · okumaya devam et';
+        await bekle(400);
+      }
+      if (iptal) break;
+      await bolumGoster(it, bolumler, b);
+      sonGosterilen = b;
+      b++;
+    }
+    if (!iptal && b >= bolumler.length && bolumler.length > 1) $('durum').textContent = 'Son bölümdesin ✅';
   } catch (e) {
     $('durum').textContent = 'Hata: ' + e.message;
     $('ust').classList.remove('gizli');
   } finally {
     $('dur').hidden = true;
     calisiyor = false;
+  }
+}
+
+async function bolumGoster(it, bolumler, b) {
+  const bl = bolumler[b];
+  const kap = document.createElement('div');
+  kap.className = 'bolum';
+  kap.dataset.b = String(b);
+  const bas = document.createElement('div');
+  bas.className = 'bolumBaslik';
+  bas.textContent = bl.ad;
+  kap.appendChild(bas);
+  $('sayfalar').appendChild(kap);
+
+  // 1) Daha önce çevrilmiş ve kaydedilmişse hemen göster
+  if (kayitliMi(it, bl)) {
+    try { await cbzGoster(it, bl, kap); kap.dataset.hazir = '1'; return; }
+    catch (e) {
+      console.warn('Kayıtlı bölüm açılamadı, yeniden çevriliyor:', e);
+      kap.querySelectorAll('.sayfa').forEach(n => n.remove());
+    }
+  }
+
+  // 2) Değilse sayfaları indirip çevir (orijinal sayfa hemen görünür, çeviri üstüne işlenir)
+  const on = bolumler.length > 1 ? `Bölüm ${b + 1}/${bolumler.length} · ` : '';
+  $('durum').textContent = on + 'sayfalar getiriliyor...';
+  const liste = await bolumResimleri(it, bl);
+  if (!liste.length) throw new Error('Bu bölümde sayfa bulunamadı.');
+  const k = await dilBelirle(it, liste);
+  if (iptal) return;
+  const kM = mKodu(k), hM = it.hedef;
+  if (kM === hM) throw new Error(`Kaynak (${dilAdi(k)}) ve hedef dil aynı. 🌐 düğmesinden birini değiştir.`);
+
+  await ociGetir(k);
+  ceviriHata = 0;
+  const bloblar = [];
+  let hatali = 0;
+  let sonraki = resimYukle(liste[0]).catch(() => null);
+  for (let i = 0; i < liste.length && !iptal; i++) {
+    const img = await sonraki;
+    sonraki = i + 1 < liste.length ? resimYukle(liste[i + 1]).catch(() => null) : null;
+    if (iptal) break;
+    if (!img) hatali++;
+    else if (img.naturalWidth >= 300 && img.naturalHeight >= 300) {
+      try {
+        const etiket = `${on}${dilAdi(k)} → ${hedefAdi(hM)} · sayfa ${i + 1}/${liste.length}`;
+        const tuval = await sayfaIsle(img, k, kM, hM, etiket, kap);
+        const blob = await new Promise(r => tuval.toBlob(r, 'image/jpeg', 0.9));
+        if (blob) {
+          bloblar.push(blob);
+          const im = new Image();
+          im.className = 'sayfa';
+          im.dataset.u = URL.createObjectURL(blob);
+          im.src = im.dataset.u;
+          tuval.replaceWith(im);
+        } else hatali++;
+      } catch (e) { console.warn('Sayfa atlandı:', e); hatali++; }
+    }
+    delete liste[i].img;
+    if (!liste[i].proxy) URL.revokeObjectURL(liste[i].kaynak);
+  }
+  liste.forEach(o => delete o.img);
+  if (iptal) return;
+  kap.dataset.hazir = '1';
+
+  if (hatali || ceviriHata) {
+    const parca = [];
+    if (hatali) parca.push(`${hatali} sayfa yüklenemedi`);
+    if (ceviriHata) parca.push(`${ceviriHata} balon çevrilemedi`);
+    const w = document.createElement('div');
+    w.className = 'uyari';
+    w.textContent = `⚠️ ${parca.join(', ')} · bu bölüm kaydedilmedi. 🌐 → baştan çevir ile tekrar dene.`;
+    kap.appendChild(w);
+  } else if (bloblar.length) {
+    const mesaj = await bolumKaydet(it, bl, bloblar);
+    $('durum').textContent = `${on}bitti ✅ (${bloblar.length} sayfa) · ${mesaj}`;
   }
 }
 
@@ -541,24 +859,27 @@ async function zipOku(blob) { // -> [{ ad, blob }]
 }
 
 const xmlKacis = t => String(t).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
-const guvenliAd = t => (String(t).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80)) || 'cizgi-roman';
+const guvenliAd = t => (String(t).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100)) || 'cizgi-roman';
 
-async function cbzYap(it, bloblar) {
+async function cbzYap(it, bl, bloblar) {
+  const coklu = bolumListesi(it).length > 1;
   const hane = Math.max(3, String(bloblar.length).length);
   const dosyalar = bloblar.map((b, i) => ({ ad: String(i + 1).padStart(hane, '0') + '.jpg', blob: b }));
-  const xml = `<?xml version="1.0" encoding="utf-8"?>\n<ComicInfo>\n  <Title>${xmlKacis(it.baslik)}</Title>\n` +
+  const xml = `<?xml version="1.0" encoding="utf-8"?>\n<ComicInfo>\n  <Title>${xmlKacis(coklu ? bl.ad : it.baslik)}</Title>\n` +
+              (coklu ? `  <Series>${xmlKacis(it.baslik)}</Series>\n` : '') +
               `  <LanguageISO>${xmlKacis(it.hedef)}</LanguageISO>\n  <PageCount>${bloblar.length}</PageCount>\n</ComicInfo>\n`;
   dosyalar.push({ ad: 'ComicInfo.xml', blob: new Blob([xml], { type: 'text/xml' }) });
   return zipYap(dosyalar);
 }
 
-// Çeviri bitince: uygulamanın içine (galeriye düşmez) ve telefonun Documents klasörüne .cbz olarak kaydeder
-async function cbzKaydet(it, bloblar) {
-  it.cbz = await cbzYap(it, bloblar);
-  it.cbzKaynak = it.kaynak;
-  it.cbzHedef = it.hedef;
+// Bölüm çevrilince: uygulamanın içine (galeriye düşmez) ve telefonun Documents klasörüne .cbz olarak kaydeder
+async function bolumKaydet(it, bl, bloblar) {
+  const cbz = await cbzYap(it, bl, bloblar);
+  await cbzYaz(cbzAnahtar(it, bl), cbz);
+  it.cbzDil = it.kaynak + '|' + it.hedef;
+  it.kayitli = Array.from(new Set([...(it.kayitli || []), bolumAnahtari(bl)]));
   await kaydetItem(it);
-  return cbzDisaAktar(it);
+  return cbzDisaAktar(it, bl, cbz);
 }
 
 let _Fs = null;
@@ -580,20 +901,22 @@ async function dosyayaYaz(dizin, yol, blob) {
   }
 }
 
-async function cbzDisaAktar(it) {
-  if (!it.cbz) return 'Kayıtlı çeviri yok';
-  const ad = guvenliAd(it.baslik) + '.cbz';
+async function cbzDisaAktar(it, bl, blob) {
+  blob = blob || await cbzOku(cbzAnahtar(it, bl));
+  if (!blob) return 'Kayıtlı çeviri yok';
+  const coklu = bolumListesi(it).length > 1;
+  const ad = guvenliAd(coklu ? `${it.baslik} - ${bl.ad}` : it.baslik) + '.cbz';
   if (native) {
     for (const [dizin, etiket] of [['DOCUMENTS', 'Documents/CizgiCevirici'], ['EXTERNAL', 'uygulamanın harici klasörü/CizgiCevirici']]) {
       try {
-        await dosyayaYaz(dizin, 'CizgiCevirici/' + ad, it.cbz);
+        await dosyayaYaz(dizin, 'CizgiCevirici/' + ad, blob);
         return `📦 ${etiket}/${ad}`;
       } catch (e) { console.warn('Yazılamadı:', dizin, e); }
     }
     return 'Uygulama içine kaydedildi (telefon klasörüne yazılamadı)';
   }
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(it.cbz);
+  a.href = URL.createObjectURL(blob);
   a.download = ad;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
@@ -601,26 +924,31 @@ async function cbzDisaAktar(it) {
 }
 
 // Kayıtlı çeviriyi (OCR ve çeviri yapmadan) doğrudan gösterir
-async function cbzGoster(it) {
-  $('durum').textContent = 'Kayıtlı çeviri açılıyor...';
+async function cbzGoster(it, bl, kap) {
+  const blob = await cbzOku(cbzAnahtar(it, bl));
+  if (!blob) throw new Error('Kayıt bulunamadı');
   const tipler = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
-  const sayfalar = (await zipOku(it.cbz))
+  const sayfalar = (await zipOku(blob))
     .filter(g => /\.(jpe?g|png|webp)$/i.test(g.ad))
     .sort((a, b) => a.ad.localeCompare(b.ad, undefined, { numeric: true }));
   if (!sayfalar.length) throw new Error('Kayıtlı dosya boş');
   for (const g of sayfalar) {
     const im = new Image();
+    im.className = 'sayfa';
     im.decoding = 'async';
-    im.src = URL.createObjectURL(g.blob.slice(0, g.blob.size, tipler[g.ad.split('.').pop().toLowerCase()]));
-    $('sayfalar').appendChild(im);
+    im.dataset.u = URL.createObjectURL(g.blob.slice(0, g.blob.size, tipler[g.ad.split('.').pop().toLowerCase()]));
+    im.src = im.dataset.u;
+    kap.appendChild(im);
   }
   $('durum').textContent = `Kayıtlı çeviri açıldı ✅ (${sayfalar.length} sayfa)`;
 }
 
 $('cbzBtn').onclick = async () => {
-  if (!acik || !acik.cbz) { $('durum').textContent = 'Çeviri bitince otomatik kaydedilir; henüz kayıtlı bir çeviri yok.'; return; }
+  if (!acik) return;
+  const bl = bolumListesi(acik)[okunanIndeks(acik)];
+  if (!kayitliMi(acik, bl)) { $('durum').textContent = 'Bu bölümün çevirisi henüz kaydedilmedi (bitince otomatik kaydedilir).'; return; }
   $('durum').textContent = '.cbz kaydediliyor...';
-  try { $('durum').textContent = await cbzDisaAktar(acik); }
+  try { $('durum').textContent = await cbzDisaAktar(acik, bl); }
   catch (e) { $('durum').textContent = 'Hata: ' + e.message; }
 };
 
@@ -716,71 +1044,10 @@ async function isciKapat() {
   isci = null; isciDil = null;
 }
 
-async function hepsiniIsle(liste, it) {
-  try {
-    let k = it.kaynak;
-    if (k === 'auto') {
-      if (it.algilanan) k = it.algilanan;
-      else {
-        const t = await dilAlgila(liste, it.tur === 'link' ? seriAnahtari(it.link) : null);
-        if (iptal) { $('durum').textContent = 'Durduruldu ⏹'; return; }
-        k = t || 'eng';
-        if (t) { it.algilanan = t; await kaydetItem(it); }
-        else $('durum').textContent = 'Dil algılanamadı, İngilizce varsayıldı.';
-      }
-    }
-    const kM = mKodu(k), hM = it.hedef;
-    if (kM === hM) throw new Error(`Kaynak (${dilAdi(k)}) ve hedef dil aynı. 🌐 düğmesinden birini değiştir.`);
-
-    await ociGetir(k);
-    const bloblar = [];
-    let hatali = 0;
-    ceviriHata = 0;
-    let sonraki = resimYukle(liste[0]).catch(() => null);
-    for (let i = 0; i < liste.length && !iptal; i++) {
-      const img = await sonraki;
-      sonraki = i + 1 < liste.length ? resimYukle(liste[i + 1]).catch(() => null) : null;
-      if (iptal) break;
-      if (!img) hatali++;
-      else if (img.naturalWidth >= 300 && img.naturalHeight >= 300) {
-        try {
-          const etiket = `${dilAdi(k)} → ${hedefAdi(hM)} · sayfa ${i + 1}/${liste.length}`;
-          const tuval = await sayfaIsle(img, k, kM, hM, etiket);
-          // İşlenen sayfayı JPEG'e çevir: hem belleği rahatlatır hem .cbz için saklanır
-          const b = await new Promise(r => tuval.toBlob(r, 'image/jpeg', 0.9));
-          if (b) {
-            bloblar.push(b);
-            const im = new Image();
-            im.src = URL.createObjectURL(b);
-            tuval.replaceWith(im);
-          } else hatali++;
-        } catch (e) { console.warn('Sayfa atlandı:', e); hatali++; }
-      }
-      delete liste[i].img;
-      if (!liste[i].proxy) URL.revokeObjectURL(liste[i].kaynak);
-    }
-    if (iptal) { $('durum').textContent = 'Durduruldu ⏹'; return; }
-    if (hatali || ceviriHata) {
-      const parca = [];
-      if (hatali) parca.push(`${hatali} sayfa yüklenemedi`);
-      if (ceviriHata) parca.push(`${ceviriHata} balon çevrilemedi`);
-      $('durum').textContent = `Bitti ⚠️ ${parca.join(', ')} · kaydedilmedi. Biraz sonra 🌐 → baştan çevir ile tekrar dene.`;
-      return;
-    }
-    if (bloblar.length) {
-      $('durum').textContent = 'Çeviri .cbz olarak kaydediliyor...';
-      const mesaj = await cbzKaydet(it, bloblar);
-      $('durum').textContent = `Bitti ✅ (${bloblar.length} sayfa) · ${mesaj}`;
-    } else $('durum').textContent = 'Bitti ✅';
-  } finally {
-    liste.forEach(o => delete o.img);
-  }
-}
-
 // Uzun webtoon şeritlerini baloncukları ortadan kesmeyecek şekilde boş satırlardan parçalara böler
 const MAX_GEN = 1400, PARCA = 1800;
 
-async function sayfaIsle(img, k, kM, hM, etiket) {
+async function sayfaIsle(img, k, kM, hM, etiket, kap) {
   let oran = img.naturalWidth < 900 ? 900 / img.naturalWidth : Math.min(1, MAX_GEN / img.naturalWidth);
   if (img.naturalHeight * oran > 16000) oran = 16000 / img.naturalHeight;
   const W = Math.round(img.naturalWidth * oran), H = Math.round(img.naturalHeight * oran);
@@ -789,7 +1056,7 @@ async function sayfaIsle(img, k, kM, hM, etiket) {
   tuval.width = W; tuval.height = H;
   const ctx = tuval.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(img, 0, 0, W, H);
-  $('sayfalar').appendChild(tuval); // orijinal hemen görünür, çeviri üstüne işlenir
+  kap.appendChild(tuval); // orijinal hemen görünür, çeviri üstüne işlenir
 
   const worker = await ociGetir(k);
   const nokta = kesimNoktalari(ctx, W, H);
@@ -962,17 +1229,64 @@ async function havuz(isler, n, fn) {
   return sonuc;
 }
 
-// Balona yazma
+// ---- Balona yazma: eski yazıyı sadece harf pikselleri kadar siler, balonun gerisini bozmaz ----
+// Kutunun kenarındaki piksellerin en sık görülen rengi = balonun zemini
 function zeminRengi(ctx, x, y, w, h) {
   x = Math.max(0, x | 0); y = Math.max(0, y | 0);
   w = Math.min(ctx.canvas.width - x, w | 0); h = Math.min(ctx.canvas.height - y, h | 0);
   if (w < 3 || h < 3) return [255, 255, 255];
   const d = ctx.getImageData(x, y, w, h).data;
-  let r = 0, g = 0, b = 0, n = 0;
-  const al = i => { r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; };
+  const kovalar = new Map();
+  const al = i => {
+    const anahtar = ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+    const e = kovalar.get(anahtar);
+    if (e) { e.n++; e.r += d[i]; e.g += d[i + 1]; e.b += d[i + 2]; }
+    else kovalar.set(anahtar, { n: 1, r: d[i], g: d[i + 1], b: d[i + 2] });
+  };
   for (let i = 0; i < w; i++) { al(i * 4); al(((h - 1) * w + i) * 4); }
   for (let j = 1; j < h - 1; j++) { al(j * w * 4); al((j * w + w - 1) * 4); }
-  return [r / n | 0, g / n | 0, b / n | 0];
+  let en = null;
+  for (const e of kovalar.values()) if (!en || e.n > en.n) en = e;
+  return [en.r / en.n | 0, en.g / en.n | 0, en.b / en.n | 0];
+}
+
+// Zeminden belirgin farklı pikselleri (harfler) bulup yakın temiz pikselin rengiyle doldurur.
+// Arka plan resimse (çok piksel farklıysa) false döner; o zaman dikdörtgenle doldurulur.
+function yaziyiSil(ctx, x, y, w, h, bg) {
+  x = Math.max(0, x | 0); y = Math.max(0, y | 0);
+  w = Math.min(ctx.canvas.width - x, w | 0); h = Math.min(ctx.canvas.height - y, h | 0);
+  if (w < 3 || h < 3) return false;
+  const img = ctx.getImageData(x, y, w, h), d = img.data, n = w * h;
+  const m = new Uint8Array(n);
+  let say = 0;
+  for (let p = 0; p < n; p++) {
+    const i = p * 4;
+    if (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 150) { m[p] = 1; say++; }
+  }
+  if (say / n > 0.45) return false;
+
+  const R = 2, yatay = new Uint8Array(n), g = new Uint8Array(n); // harf kenarlarındaki yumuşak pikselleri de kapsa
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (m[j * w + i]) {
+    for (let k = Math.max(0, i - R); k <= Math.min(w - 1, i + R); k++) yatay[j * w + k] = 1;
+  }
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (yatay[j * w + i]) {
+    for (let k = Math.max(0, j - R); k <= Math.min(h - 1, j + R); k++) g[k * w + i] = 1;
+  }
+  for (let j = 0; j < h; j++) {
+    const row = j * w;
+    let ilk = -1;
+    for (let i = 0; i < w; i++) if (!g[row + i]) { ilk = i; break; }
+    let r = ilk < 0 ? bg[0] : d[(row + ilk) * 4];
+    let gr = ilk < 0 ? bg[1] : d[(row + ilk) * 4 + 1];
+    let b = ilk < 0 ? bg[2] : d[(row + ilk) * 4 + 2];
+    for (let i = 0; i < w; i++) {
+      const p = (row + i) * 4;
+      if (g[row + i]) { d[p] = r; d[p + 1] = gr; d[p + 2] = b; }
+      else { r = d[p]; gr = d[p + 1]; b = d[p + 2]; }
+    }
+  }
+  ctx.putImageData(img, x, y);
+  return true;
 }
 
 // Yazının etrafındaki balon içini (aynı zemin rengindeki bölge) bulur; çeviri uzun çıkarsa oraya sığdırılır
@@ -1011,16 +1325,21 @@ function balonAlani(ctx, b, bg) {
 }
 
 function balonaYaz(ctx, b, metin, hM) {
-  const pad = 5;
+  const pad = 6;
   const x = Math.max(0, b.x0 - pad), y = Math.max(0, b.y0 - pad);
   const w = Math.min(ctx.canvas.width - x, b.x1 - b.x0 + pad * 2);
   const h = Math.min(ctx.canvas.height - y, b.y1 - b.y0 + pad * 2);
 
-  const [r, g, bl] = zeminRengi(ctx, x, y, w, h);
-  const alan = balonAlani(ctx, { x0: x, y0: y, x1: x + w, y1: y + h }, [r, g, bl]); // doldurmadan önce oku
-  ctx.fillStyle = `rgb(${r},${g},${bl})`;
-  ctx.fillRect(x, y, w, h); // sadece eski yazının olduğu yeri sil
-  ctx.fillStyle = (0.299 * r + 0.587 * g + 0.114 * bl) > 140 ? '#000' : '#fff';
+  const bg = zeminRengi(ctx, x, y, w, h);
+  const alan = balonAlani(ctx, { x0: x, y0: y, x1: x + w, y1: y + h }, bg); // silmeden önce oku
+  if (!yaziyiSil(ctx, x, y, w, h, bg)) {
+    ctx.fillStyle = `rgb(${bg})`;
+    ctx.fillRect(x, y, w, h);
+  }
+  const parlak = (0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2]) > 140;
+  ctx.fillStyle = parlak ? '#000' : '#fff';
+  ctx.strokeStyle = `rgb(${bg})`; // yazının etrafına zemin renginde ince hale: kalan lekelerin üstünde de okunur
+  ctx.lineJoin = 'round';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.direction = hM === 'ar' ? 'rtl' : 'ltr';
@@ -1033,8 +1352,11 @@ function balonaYaz(ctx, b, metin, hM) {
     if (satirlar.length * boyut * 1.15 <= ah) break;
   }
   boyut = Math.max(boyut, 10);
+  ctx.font = `bold ${boyut}px "Comic Sans MS", "Segoe UI", Arial, sans-serif`;
+  ctx.lineWidth = Math.max(2, boyut / 7);
   let yy = alan.y + Math.max(0, (alan.h - satirlar.length * boyut * 1.15) / 2);
-  satirlar.forEach(s => { ctx.fillText(s, alan.x + alan.w / 2, yy); yy += boyut * 1.15; });
+  const cx = alan.x + alan.w / 2;
+  satirlar.forEach(s => { ctx.strokeText(s, cx, yy); ctx.fillText(s, cx, yy); yy += boyut * 1.15; });
 }
 
 function sar(ctx, metin, genislik) {
