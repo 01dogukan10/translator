@@ -105,7 +105,8 @@
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js"></script>
+<script src="tesseract/tesseract.min.js"></script>
+<script>window.Tesseract || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js"><\/script>')</script>
 <script>
 const $ = id => document.getElementById(id);
 const bekle = ms => new Promise(r => setTimeout(r, ms));
@@ -642,6 +643,7 @@ async function kapagiAc(kap) {
 }
 
 async function listeyiYenile(it) {
+  if (Date.now() - (it.listeZamani || 0) < 6 * 3600 * 1000) return;
   try {
     $('durum').textContent = 'Bölüm listesi güncelleniyor...';
     const b = await sayfaBilgisi(it.link);
@@ -651,6 +653,7 @@ async function listeyiYenile(it) {
     const i = yeni.findIndex(x => x.link === suanki);
     it.bolumler = yeni;
     it.sira = i >= 0 ? i : Math.min(it.sira || 0, yeni.length - 1);
+    it.listeZamani = Date.now();
     await kaydetItem(it);
   } catch (e) { console.warn('Liste güncellenemedi:', e); }
 }
@@ -735,34 +738,32 @@ async function bolumGoster(it, bolumler, b) {
   const kM = mKodu(k), hM = it.hedef;
   if (kM === hM) throw new Error(`Kaynak (${dilAdi(k)}) ve hedef dil aynı. 🌐 düğmesinden birini değiştir.`);
 
-  await ociGetir(k);
+  await ociHavuzu(k);
   ceviriHata = 0;
-  const bloblar = [];
+  const bloblarHam = [];
   let hatali = 0;
-  let sonraki = resimYukle(liste[0]).catch(() => null);
-  for (let i = 0; i < liste.length && !iptal; i++) {
-    const img = await sonraki;
-    sonraki = i + 1 < liste.length ? resimYukle(liste[i + 1]).catch(() => null) : null;
-    if (iptal) break;
-    if (!img) hatali++;
-    else if (img.naturalWidth >= 300 && img.naturalHeight >= 300) {
-      try {
-        const etiket = `${on}${dilAdi(k)} → ${hedefAdi(hM)} · sayfa ${i + 1}/${liste.length}`;
-        const tuval = await sayfaIsle(img, k, kM, hM, etiket, kap);
-        const blob = await new Promise(r => tuval.toBlob(r, 'image/jpeg', 0.9));
-        if (blob) {
-          bloblar.push(blob);
-          const im = new Image();
-          im.className = 'sayfa';
-          im.dataset.u = URL.createObjectURL(blob);
-          im.src = im.dataset.u;
-          tuval.replaceWith(im);
-        } else hatali++;
-      } catch (e) { console.warn('Sayfa atlandı:', e); hatali++; }
+  await sayfalariIsle(liste, kap, ISCI_SAYISI, 3, async (i, img, slot) => {
+    try {
+      if (!img) { hatali++; return; }
+      if (img.naturalWidth < 300 || img.naturalHeight < 300) return;
+      const etiket = `${on}${dilAdi(k)} → ${hedefAdi(hM)} · sayfa ${i + 1}/${liste.length}`;
+      const tuval = await sayfaIsle(img, k, kM, hM, etiket, slot);
+      const blob = await new Promise(r => tuval.toBlob(r, 'image/jpeg', 0.9));
+      if (blob) {
+        bloblarHam[i] = blob;
+        const im = new Image();
+        im.className = 'sayfa';
+        im.dataset.u = URL.createObjectURL(blob);
+        im.src = im.dataset.u;
+        tuval.replaceWith(im);
+      } else hatali++;
+    } catch (e) { console.warn('Sayfa atlandı:', e); hatali++; }
+    finally {
+      delete liste[i].img;
+      if (!liste[i].proxy) URL.revokeObjectURL(liste[i].kaynak);
     }
-    delete liste[i].img;
-    if (!liste[i].proxy) URL.revokeObjectURL(liste[i].kaynak);
-  }
+  });
+  const bloblar = bloblarHam.filter(Boolean);
   liste.forEach(o => delete o.img);
   if (iptal) return;
   kap.dataset.hazir = '1';
@@ -1011,7 +1012,7 @@ async function dilAlgila(liste, anahtar) {
   if (kayit) return kayit;
   await isciKapat();
   $('durum').textContent = 'Dil algılanıyor (ilk seferde dil verileri iner, biraz sürebilir)...';
-  const w = await Tesseract.createWorker('eng+kor+jpn+chi_sim', 1);
+  const w = await isciOlustur('eng+kor+jpn+chi_sim');
   let metin = '';
   try {
     for (const oge of liste.slice(0, 5)) {
@@ -1031,21 +1032,74 @@ async function dilAlgila(liste, anahtar) {
 }
 
 // ===================== OCR VE ÇEVİRİ =====================
-let isci = null, isciDil = null;
-async function ociGetir(dil) {
-  if (isci && isciDil === dil) return isci;
+// ---- OCR motoru: önce APK'nın içindeki dosyalar (internet gerekmez), bulunamazsa internetten ----
+const YEREL = new URL('tesseract/', location.href).href;
+let _yerel = null;
+const yerelBilgi = () => _yerel || (_yerel = fetch(YEREL + 'manifest.json').then(r => (r.ok ? r.json() : null)).catch(() => null));
+
+async function isciOlustur(dil) {
+  const bilgi = await yerelBilgi();
+  const secenek = {};
+  if (bilgi) {
+    secenek.workerPath = YEREL + 'worker.min.js';
+    secenek.corePath = YEREL + 'core/';
+    if (dil.split('+').every(d => (bilgi.diller || []).includes(d))) {
+      secenek.langPath = YEREL + 'lang/';
+      secenek.cacheMethod = 'none'; // dosya zaten telefonda, kopyasını tekrar saklama
+    }
+  }
+  try { return await Tesseract.createWorker(dil, 1, secenek); }
+  catch (e) {
+    if (!Object.keys(secenek).length) throw e;
+    console.warn('Yerel OCR açılamadı, internetten deneniyor:', e);
+    return Tesseract.createWorker(dil, 1, {});
+  }
+}
+
+// Birden fazla OCR işçisi: iki sayfa aynı anda okunur (işlemci 6 çekirdek ve üstüyse 2, değilse 1)
+const ISCI_SAYISI = (navigator.hardwareConcurrency || 4) >= 6 ? 2 : 1;
+let iscilar = [], bostaIsci = [], isciBekleyen = [], isciDil = null;
+
+async function ociHavuzu(dil) {
+  if (isciDil === dil && iscilar.length) return;
   await isciKapat();
-  isci = await Tesseract.createWorker(dil, 1);
+  iscilar = await Promise.all(Array.from({ length: ISCI_SAYISI }, () => isciOlustur(dil)));
+  bostaIsci = iscilar.slice();
   isciDil = dil;
-  return isci;
+}
+const isciAl = () => bostaIsci.length ? Promise.resolve(bostaIsci.pop()) : new Promise(r => isciBekleyen.push(r));
+function isciBirak(w) {
+  const r = isciBekleyen.shift();
+  if (r) r(w); else bostaIsci.push(w);
 }
 async function isciKapat() {
-  if (isci) { try { await isci.terminate(); } catch {} }
-  isci = null; isciDil = null;
+  const eski = iscilar;
+  iscilar = []; bostaIsci = []; isciBekleyen = []; isciDil = null;
+  for (const w of eski) { try { await w.terminate(); } catch {} }
+}
+
+// Sayfaları en fazla n tanesi aynı anda işlenecek şekilde sırayla başlatır; sıradaki resimleri önceden indirir.
+// Her sayfa kendi yer tutucusuna (slot) yazar, böylece sıra bozulmaz.
+async function sayfalariIsle(liste, kap, n, onyukle, isle) {
+  const yuklemeler = [];
+  const yukle = i => i < liste.length ? (yuklemeler[i] = yuklemeler[i] || resimYukle(liste[i]).catch(() => null)) : null;
+  const calisan = new Set();
+  for (let i = 0; i < liste.length && !iptal; i++) {
+    for (let j = i; j <= i + onyukle; j++) yukle(j);
+    const img = await yukle(i);
+    yuklemeler[i] = null;
+    if (iptal) break;
+    const slot = document.createElement('div');
+    kap.appendChild(slot);
+    const is = (async () => { try { await isle(i, img, slot); } finally { calisan.delete(is); } })();
+    calisan.add(is);
+    if (calisan.size >= n) await Promise.race(calisan);
+  }
+  await Promise.all(calisan);
 }
 
 // Uzun webtoon şeritlerini baloncukları ortadan kesmeyecek şekilde boş satırlardan parçalara böler
-const MAX_GEN = 1400, PARCA = 1800;
+const MAX_GEN = 1100, PARCA = 1800;
 
 async function sayfaIsle(img, k, kM, hM, etiket, kap) {
   let oran = img.naturalWidth < 900 ? 900 / img.naturalWidth : Math.min(1, MAX_GEN / img.naturalWidth);
@@ -1058,7 +1112,6 @@ async function sayfaIsle(img, k, kM, hM, etiket, kap) {
   ctx.drawImage(img, 0, 0, W, H);
   kap.appendChild(tuval); // orijinal hemen görünür, çeviri üstüne işlenir
 
-  const worker = await ociGetir(k);
   const nokta = kesimNoktalari(ctx, W, H);
   for (let j = 0; j < nokta.length - 1 && !iptal; j++) {
     $('durum').textContent = `${etiket} · parça ${j + 1}/${nokta.length - 1}`;
@@ -1067,7 +1120,9 @@ async function sayfaIsle(img, k, kM, hM, etiket, kap) {
     alt.width = W; alt.height = h;
     alt.getContext('2d').drawImage(tuval, 0, y0, W, h, 0, 0, W, h);
 
-    const { data } = await worker.recognize(alt);
+    const w = await isciAl();
+    let data;
+    try { ({ data } = await w.recognize(alt)); } finally { isciBirak(w); }
     const balonlar = balonlariCikar(data, k, y0);
     if (!balonlar.length) continue;
 
