@@ -1,11 +1,29 @@
 {
   "name": "cizgi-cevirici",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
+  "scripts": {
+    "postinstall": "node -e \"try{require('./scripts/tesseract-kopyala.js')}catch(e){console.log('Tesseract kopyalama atlandi:',e.message)}\""
+  },
   "dependencies": {
     "@capacitor/android": "^6.1.2",
     "@capacitor/cli": "^6.1.2",
     "@capacitor/core": "^6.1.2",
-    "@capacitor/filesystem": "^6.0.0"
+    "@capacitor/filesystem": "^6.0.0",
+    "@tesseract.js-data/ara": "^1.0.0",
+    "@tesseract.js-data/chi_sim": "^1.0.0",
+    "@tesseract.js-data/chi_tra": "^1.0.0",
+    "@tesseract.js-data/deu": "^1.0.0",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@tesseract.js-data/fra": "^1.0.0",
+    "@tesseract.js-data/ind": "^1.0.0",
+    "@tesseract.js-data/ita": "^1.0.0",
+    "@tesseract.js-data/jpn": "^1.0.0",
+    "@tesseract.js-data/kor": "^1.0.0",
+    "@tesseract.js-data/por": "^1.0.0",
+    "@tesseract.js-data/rus": "^1.0.0",
+    "@tesseract.js-data/spa": "^1.0.0",
+    "@tesseract.js-data/tur": "^1.0.0",
+    "tesseract.js": "5.1.1"
   }
 }
